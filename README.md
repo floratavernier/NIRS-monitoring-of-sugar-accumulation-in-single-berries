@@ -3,6 +3,8 @@ title: "Read me"
 author: "F Tavernier, V. Segura"
 ---
 
+Corresponding authors: <flora-tavernier@hotmail.fr>, <vincent.segura@inrae.fr>
+
 This document describes the scripts and datasets used to produce the results presented in our article entitled "Near infrared real time non destructive monitoring of sugar accumulation reveals that single berries ripen two fold faster than previously documented on standard asynchronous samples".
 
 # Repository Structure
