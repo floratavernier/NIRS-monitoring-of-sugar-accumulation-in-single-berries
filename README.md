@@ -9,6 +9,8 @@ This document describes the scripts and datasets used to produce the results pre
 
 # Repository Structure
 ## `data/`: raw and processed datasets
+Datasets are available at <https://doi.org/10.57745/YGKPZA>
+
 - `NIRSBaies_2021et2022_HPLC.csv`: This table corresponds to the HPLC measurements and NIRS from 2021 and 2022.
 
 - `Training_dataset_2021-2022_CalibNIRS.csv`: This table was used to train the PLSR models for predicting the traits.
