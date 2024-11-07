@@ -1,0 +1,621 @@
+---
+title: "Estimation of sugar accumulation time"
+author: "Flora TAVERNIER"
+date: "`r substr(Sys.time(), 1, 10)`"
+output:
+  rmdformats::downcute
+---
+
+```{r rm tout, echo=FALSE, eval=FALSE}
+rm(list=ls())
+```
+
+```{r setup, echo=TRUE, message=FALSE, results='hide', cache=FALSE}
+knitr::opts_chunk$set(
+	message = FALSE,
+	warning = FALSE,
+	cache.lazy = FALSE
+)
+library(anyLib)
+anyLib(c("readxl", "readODS", "tidyverse", "janitor", "apercu", "signal", 
+         "kableExtra", "gridExtra", "ggplot2", "ggsignif", "ggpubr", 
+         "pls", "psych", "MASS", "prospectr", "rchemo", "ChemoSpec", #"roboost", 
+         "heatmaply", "factoextra", "ade4", "FactoMineR", 
+         "RColorBrewer", "colorRamps", "viridis"))
+```
+
+# Loading data and functions
+
+```{r}
+load("Env_tmps_acc_sucres_baies.RData")
+```
+
+# Data preparation
+
+## NIRS monitoring
+
+```{r}
+nirs.df <- nirs.list.monit$imp
+```
+
+```{r}
+# Change date format
+nirs.df$date_sp <- as.Date(nirs.df$date_sp, format = "%Y-%m-%d")
+nirs.df$date_sp <- format(nirs.df$date_sp, format = "%d.%m.%y")
+
+# New set of rownames for NIRS
+nirs.df$echantillon <- paste(nirs.df$echantillon, nirs.df$date_sp, sep = ".")
+nirs.df$echantillon <- gsub("-", ".", nirs.df$echantillon)
+nirs <- as.data.frame(nirs.df$NIRS)
+rownames(nirs) <- 1:nrow(nirs)
+```
+
+## Veraison prediction
+
+```{r}
+veraison_pred_monit <- predict(mod_plsda, nirs)
+```
+
+```{r}
+veraison_pred_monit.df <- as.data.frame(veraison_pred_monit)
+
+veraison_pred_monit.df$echantillon <- nirs.df$echantillon
+
+colnames(veraison_pred_monit.df) <- 
+  c("pred", colnames(veraison_pred_monit.df[, 2:ncol(veraison_pred_monit.df)]))
+```
+
+## Select berries after veraison only
+
+```{r}
+# baiesV <- subset(veraison_pred_monit.df[, c(1, 5)], veraison_pred_monit.df$pred == "V")
+
+baiesV <- veraison_pred_monit.df[, c(1, 5)]
+```
+
+## Merge monitoring informations
+
+```{r}
+baiesV <- baiesV
+pred.ok.noout.ok <- pred.ok.noout
+
+# Convert the ‘date_sp’ column to Date format
+pred.ok.noout.ok$date_sp <- as.Date(pred.ok.noout.ok$date_sp, format = "%Y-%m-%d")
+
+# Change date format to dd.mm.yy
+pred.ok.noout.ok$date_sp <- format(pred.ok.noout.ok$date_sp, format = "%d.%m.%y")
+
+# Sample creation with bay ID and date
+pred.ok.noout.ok$echantillon <- paste(pred.ok.noout.ok$grappebaie, pred.ok.noout.ok$date_sp, sep = ".")
+
+# Replace ‘-’ with ‘.’ in the ‘sample’ column
+pred.ok.noout.ok$echantillon <- gsub("-", ".", pred.ok.noout.ok$echantillon)
+
+# Merge
+baiesV.ok <- merge(baiesV, pred.ok.noout.ok, by = "echantillon")
+```
+
+```{r}
+# Drop duplicates
+length(which(duplicated(baiesV.ok$echantillon) == "TRUE"))
+dup <- baiesV.ok[which(duplicated(baiesV.ok$echantillon) == "TRUE"),]
+```
+```{r}
+# Change data format
+baiesV.ok <- as.data.frame(baiesV.ok)
+baiesV.ok[] <- lapply(baiesV.ok, function(x) if(is.list(x)) as.character(x) else x)
+```
+
+```{r}
+baiesV.ok$UniqueID <- paste(baiesV.ok$echantillon, baiesV.ok$num, sep = "_")
+
+# Delete duplicates by keeping the first occurrence
+baiesV.ok <- baiesV.ok[!duplicated(baiesV.ok$UniqueID), ]
+```
+
+```{r}
+baiesV.ok <- baiesV.ok %>% relocate(UniqueID, .before = echantillon) %>% 
+  relocate(num, .after = echantillon) %>% 
+  relocate(pred, .after = DateDOY) %>% 
+  relocate(sum.Gpred.Fpred, .after = Notes)
+
+# baiesV.ok <- baiesV.ok[, -c(3, 9, 12, 13, 15:17)]
+
+baiesV.ok <- baiesV.ok %>% rename(sugar_cal = sum.Gpred.Fpred)
+```
+
+```{r}
+baiesV.ok$DateDOY <- as.numeric(baiesV.ok$DateDOY)
+```
+
+# Polynomial fit for each berry
+
+## Sorting healthy berries (without notes)
+
+```{r}
+print("Account with notes")
+nrow(baiesV.ok)
+
+# Filter
+df_sain <- baiesV.ok[is.na(baiesV.ok$Notes), ]
+
+print("Account whitout notes")
+nrow(df_sain)
+```
+
+## Sorting berries > 1.5 M G+F
+
+```{r}
+print("Account all G+F")
+nrow(df_sain)
+
+# Filter
+df_sain$sugar_cal[which(df_sain$sugar_cal < 0)] <- 0
+df_sain <- df_sain[df_sain$sugar_cal <= 1500, ]
+
+
+print("Account of berries between 0 and 1500 mM G+F")
+nrow(df_sain)
+```
+
+## Select 2022 genotypes
+
+```{r}
+cep2022 <- c("Ugni blanc", "Mourvèdre", "Morrastel", "Grenache", "Riesling", "Carmenère")
+subset_df_sain <- df_sain[grep(paste(cep2022, collapse = "|"), df_sain$geno), ]
+
+# Replace special characters
+subset_df_sain$geno <- gsub("è", "e", subset_df_sain$geno)
+```
+
+## Polynomial: order 2
+
+```{r}
+fitpoly2 <- NULL
+poly_all2 <- NULL
+for (genot in unique(subset_df_sain$geno)) {
+  # Subset genotype
+  sub.geno <- subset(subset_df_sain, subset_df_sain$geno == genot)
+  # Select berries with at least 9 dates
+  b9dat <- names(which(table(sub.geno$genoID) >= 9))
+  # The date 200 has been removed because the spectra had a problem on that date
+  dat <- subset(sub.geno, genoID %in% b9dat & doy != 200)
+
+  for (b in unique(dat$grappebaie)) {
+    # Subset berry
+    sub <- subset(dat, dat$grappebaie == b)
+    
+    # Fitting a polynomial model with lm()
+    sub$DateDOY <- as.numeric(sub$DateDOY)
+    fit2 <- lm(sugar_cal ~ stats::poly(DateDOY, 2, raw = T), data = sub)
+    sub$polynomial_sugar_cal <- predict(fit2, newdata = sub)
+    
+    # Plot
+    p <- 
+      ggplot(sub, aes(x = DateDOY, y = sugar_cal)) +
+      geom_line() +
+      geom_point() +
+      geom_line(aes(y = polynomial_sugar_cal), # Predicted polynomial curve
+                color = "blue", 
+                linetype = "dashed") + 
+      geom_hline(yintercept = 1000, color = "darkorchid") +
+      geom_hline(yintercept = 200, color = "forestgreen") +
+      labs(x = "Day of Year (DOY)", y = "Sugar_cal (G pred + F pred)",
+           title = paste("Polynomial 2", genot, b)) +
+      theme_minimal()
+    
+    print(p)
+    
+    # Save polynomial
+    poly_all2[[paste(genot, b, sep = "_")]] <- sub
+    fitpoly2[[paste(genot, b, sep = "_")]] <- fit2
+  }
+}
+```
+
+# Logistic regression (sigmoid fit) for each berry
+
+```{r fig.height=4, fig.width=6, message=TRUE, warning=TRUE}
+fitlogi <- NULL
+logi_all <- NULL
+coef_logi <- NULL
+summR2_logi <- NULL
+
+for (genot in unique(subset_df_sain$geno)) {
+  sub.geno <- subset(subset_df_sain, subset_df_sain$geno == genot)
+  b9dat <- names(which(table(sub.geno$genoID) >= 9))
+  dat <- subset(sub.geno, genoID %in% b9dat & doy != 200)
+  
+  for (b in unique(dat$grappebaie)) {
+    sub <- subset(dat, dat$grappebaie == b)
+    sub$DateDOY <- as.numeric(sub$DateDOY)
+    
+    # Normalisation of data by their max
+    # sub$sugar_cal <- sub$sugar_cal / max(sub$sugar_cal, na.rm = TRUE)
+    
+    # Fitting a logistic regression with nls() by providing explicit initial values:
+    tryCatch({
+      fit <- nls(sugar_cal ~ SSlogis(DateDOY, Asym, xmid, scal),
+                 data = sub,
+                 # make the convergence algorithm more tolerant:
+                 control = nls.control(minFactor = 1e-8))
+    # fit <- nls(sugar_cal ~ SSlogis(DateDOY, Asym, xmid, scal), data = sub)
+    sub$reg_logi_sugar_cal <- predict(fit, newdata = sub)
+    
+    # R² for logistic regression
+    # Sum of total squares:
+    ss_total <- sum((sub$sugar_cal - mean(sub$sugar_cal)) ^ 2)
+    # Sum of residual squares:
+    ss_res <- sum(residuals(fit) ^ 2)
+    # Calculation of pseudo-R²:
+    r2 <- 1 - (ss_res / ss_total)
+    
+    # Plot
+    p <- 
+      ggplot(sub, aes(x = DateDOY, y = sugar_cal)) +
+      geom_line() +
+      geom_point() +
+      geom_line(aes(y = reg_logi_sugar_cal), # Predicted sigmoid curve
+                color = "blue", 
+                linetype = "dashed") + 
+      geom_hline(yintercept = 1000, color = "darkorchid") +
+      geom_hline(yintercept = 200, color = "forestgreen") +
+      labs(x = "Day of Year (DOY)", y = "Sugar_cal (G pred + F pred)",
+           title = paste("Logistic regression", genot, b)) +
+      theme_minimal()
+    
+    print(p)
+    
+    # Save sigmoid fit
+    logi_all[[paste(genot, b, sep = "_")]] <- sub
+    fitlogi[[paste(genot, b, sep = "_")]] <- fit
+    coef_logi[[paste(genot, b, sep = "_")]] <- coef(fit)
+    summR2_logi[[paste(genot, b, sep = "_")]] <- r2
+    },
+    error = function(e) { # Error message
+      message(paste("Adjustment error for", genot, b, ":", e$message))
+    })
+  }
+}
+```
+
+## Output polynomial
+
+### Dataframe of predicted sugar_cal values
+
+```{r}
+poly_all_df <- do.call(rbind, poly_all2)
+```
+
+```{r}
+poly_all_df.ok <- poly_all_df
+```
+
+```{r}
+poly_all_df.ok <- poly_all_df.ok[, c("geno", "grappebaie", "doy", "polynomial_sugar_cal", "glucose", "fructose", "malate", "sugar_cal", "poids_baie", "Notes")]
+```
+
+### Polynomial fit output
+
+```{r}
+fitpoly2.ok <- NULL
+for (i in names(fitpoly2)) {
+    fitpoly2.ok[[i]] <- fitpoly2[[i]][[1]]
+}
+```
+
+```{r}
+fitpoly2.coef <- as.data.frame(do.call(rbind, fitpoly2.ok))
+
+fitpoly2.coef$echantillon <- rownames(fitpoly2.coef)
+
+colnames(fitpoly2.coef) <- c("c", "b", "a", "echantillon")
+```
+
+```{r}
+cep2022 <- c("Ugni blanc", "Mourvèdre", "Morrastel", "Grenache", "Riesling", "Carmenère")
+
+subset_fitpoly2 <- fitpoly2.coef[grep(paste(cep2022, collapse = "|"), fitpoly2.coef$echantillon), ]
+```
+
+### Summary of polynomial fit
+
+```{r}
+summi <- NULL
+for (i in names(fitpoly2)) {
+  # print(i)
+  summi[[i]] <- summary(fitpoly2[[i]])
+  # print(summi[[i]])
+}
+```
+
+```{r}
+r_squared_values <- sapply(summi, function(x) x$r.squared)
+names_summi <- names(summi)
+summi.df <- data.frame(echantillon = names_summi, R_squared = r_squared_values)
+
+subset_summi.df <- summi.df[grep(paste(cep2022, collapse = "|"), summi.df$echantillon), ]
+
+coeff.rsq.poly2 <- merge(subset_summi.df, subset_fitpoly2, by = "echantillon")
+coeff.rsq.poly2$echantillon <- gsub("è", "e", coeff.rsq.poly2$echantillon)
+```
+
+```{r}
+coeff.rsq.poly2$baieid <- coeff.rsq.poly2$echantillon
+coeff.rsq.poly2$baieid <- gsub("_", "", coeff.rsq.poly2$baieid)
+coeff.rsq.poly2$baieid <- gsub("-", "baie", coeff.rsq.poly2$baieid)
+coeff.rsq.poly2$baieid <- gsub(" ", "", coeff.rsq.poly2$baieid)
+
+poly_all_df.ok$geno <- gsub("è", "e", poly_all_df.ok$geno)
+```
+
+### Save outputs
+
+```{r eval=FALSE}
+# Polynomial data:
+setwd("D:/Mes Donnees/Doctorat/Axe 1 - NIRS/Model_final_propre_OK")
+write.csv2(poly_all_df.ok, file = "Data_AfterVeraison_for_calcul_time.csv")
+
+write.csv2(poly_all_df.ok, file = "Data_for_calcul_time_poly2.csv")
+```
+
+```{r eval=FALSE}
+# Dataframe of filtered data (whitout notes ans only 2022):
+setwd("D:/Mes Donnees/Doctorat/Axe 1 - NIRS/Model_final_propre_OK")
+write.csv2(subset_df_sain, file = "Data_for_calcul_time.csv")
+```
+
+```{r eval=FALSE}
+# Coefficients of the polynomial and R²:
+setwd("D:/Mes Donnees/Doctorat/Axe 1 - NIRS/Model_final_propre_OK")
+write.csv2(coeff.rsq.poly2, file = "Data_for_calcul_time_rsquare_poly2.csv")
+```
+
+## Output logistic regression (sigmoid)
+
+### Dataframe of predicted sugar_cal values
+
+```{r}
+logi_all_df <- as.data.frame(do.call(rbind, logi_all))
+```
+
+```{r}
+logi_all_df.ok <- logi_all_df
+```
+
+```{r}
+logi_all_df.ok <- logi_all_df.ok[, c("geno", "grappebaie", "doy", "reg_logi_sugar_cal", "glucose", "fructose", "malate", "sugar_cal", "poids_baie", "Notes")]
+```
+
+### Sigmoid fit output
+
+```{r}
+coef_logi.ok <- as.data.frame(do.call(rbind, coef_logi))
+coef_logi.ok$echantillon <- rownames(coef_logi.ok)
+
+summR2_logi.df <- as.data.frame(do.call(rbind, summR2_logi))
+summR2_logi.df$echantillon <- rownames(summR2_logi.df)
+```
+
+```{r}
+coef_R2_logi <- merge(coef_logi.ok, summR2_logi.df, by = "echantillon")
+```
+
+```{r}
+logi_all_df.ok$geno <- gsub("è", "e", logi_all_df.ok$geno)
+```
+
+### Save outputs
+
+```{r eval=FALSE}
+# Sigmoid data:
+setwd("D:/Mes Donnees/Doctorat/Axe 1 - NIRS/Model_final_propre_OK")
+write.csv2(logi_all_df.ok, file = "Data_for_calcul_time_logi.csv")
+```
+
+```{r eval=FALSE}
+# Coefficients of the sigmoid + R²:
+setwd("D:/Mes Donnees/Doctorat/Axe 1 - NIRS/Model_final_propre_OK")
+write.csv2(coef_R2_logi, file = "coef_logi_rsq.csv")
+```
+
+# Examination of the R²
+
+```{r}
+# Selection of the same berries for the two fits
+rsq_poly_sigm <- merge(coeff.rsq.poly2, coef_R2_logi, by = "echantillon")
+
+colnames(rsq_poly_sigm) <- c("echantillon", 
+                             "R²_poly2", 
+                             "c", 
+                             "b", 
+                             "a", 
+                             "baieid", 
+                             "Asym", 
+                             "xmid", 
+                             "scal",
+                             "R²_sigmoid")
+```
+
+## Histogram of the R² values
+
+```{r}
+hist(rsq_poly_sigm$`R²_poly2`, 
+     breaks = 30, 
+     xlim = c(0.5, 1),
+     ylim = c(0, 15),
+     col = rgb(1, 0, 0, 0.5), 
+     xlab = "R²", ylab = "Frequency", 
+     main = "Distribution of R² for Polynomial 2 and Sigmoid")
+
+hist(rsq_poly_sigm$`R²_sigmoid`, 
+     breaks = 30, 
+     xlim = c(0.5, 1),
+     ylim = c(0, 15),
+     col = rgb(0, 0, 1, 0.5),
+     add = T)
+
+legend("topleft", legend = c("Poly2","Sigmoid"), col = c(rgb(1, 0, 0, 0.5), 
+     rgb(0, 0, 1, 0.5)), pt.cex = 2, pch = 15, bty = "n")
+```
+
+```{r}
+# Defining the layout of graphics
+par(mfrow = c(1, 2), mar = c(4, 4, 2, 0), oma = c(0, 0, 2, 0)) # oma= adds space for a common title
+
+# Polynomial hist
+hist(rsq_poly_sigm$`R²_poly2`, 
+     breaks = 20, 
+     xlim = c(0.5, 1),
+     ylim = c(0, 20),
+     col = rgb(1, 0, 0, 0.5), 
+     xlab = "R²", ylab = "Frequency", 
+     main = "")
+
+legend("topleft", legend = c("Poly2","Sigmoid"), col = c(rgb(1, 0, 0, 0.5), 
+     rgb(0, 0, 1, 0.5)), pt.cex = 2, pch = 15, bty = "n")
+
+# Sigmoid hist
+hist(rsq_poly_sigm$`R²_sigmoid`, 
+     breaks = 20, 
+     xlim = c(0.5, 1),
+     ylim = c(0, 20),
+     col = rgb(0, 0, 1, 0.5), 
+     xlab = "R²", ylab = "", 
+     main = "")
+
+# Common title
+mtext("Distribution of R² for Polynomial 2 and Sigmoid", 
+      outer = TRUE, cex = 1.5)
+```
+
+## Wilcoxon test between fitting methods
+
+```{r}
+wilcox_test_result <- wilcox.test(rsq_poly_sigm$`R²_poly2`,
+                                  rsq_poly_sigm$`R²_sigmoid`,
+                                  paired = T)
+print(wilcox_test_result)
+```
+
+```{r}
+data <- data.frame(
+  value = c(rsq_poly_sigm$`R²_poly2`, rsq_poly_sigm$`R²_sigmoid`),
+  group = factor(rep(c("R²_poly2", "R²_sigmoid"), each = length(rsq_poly_sigm$`R²_poly2`)))
+)
+```
+
+<!-- ```{r eval=FALSE} -->
+<!-- ggplot(data, aes(x = group, y = value, fill = group)) + -->
+<!--   # Display the complete violin shape -->
+<!--   geom_violin(trim = F, color = NA, alpha = 0.5) + -->
+<!--   geom_boxplot(width = 0.1) + -->
+<!--   xlab("") + ylab("R² Values") +  -->
+<!--   ggtitle("Violin Plot of R² for Polynomial 2 and Sigmoid") + -->
+
+<!--   # Add individual data points and limit overlap -->
+<!--   # geom_jitter(aes(color = group), width = 0.2, size = 1.5) + -->
+<!--   # Add mean -->
+<!--   stat_summary(fun = "mean",  -->
+<!--                geom = "point",  -->
+<!--                shape = 17,  -->
+<!--                size = 3,  -->
+<!--                color = "black") + -->
+<!--   theme_minimal() + -->
+<!--   theme(legend.position = "none", -->
+<!--         plot.title = element_text(size = 18, face = "bold"),  -->
+<!--         axis.title.y = element_text(size = 16),  -->
+<!--         axis.title.x = element_text(size = 16),  -->
+<!--         axis.text.x = element_text(hjust = 1, size = 14),  -->
+<!--         axis.text.y = element_text(hjust = 1, size = 14)) + -->
+
+<!--   # Add statistical test comparisons with geom_signif() -->
+<!--   geom_signif(comparisons = list(c("R²_poly2", "R²_sigmoid")),  -->
+<!--               map_signif_level = T,  -->
+<!--               test = "wilcox.test",  -->
+<!--               step_increase = 0.1) -->
+<!-- ``` -->
+
+```{r}
+ggpaired(data, x = "group", y = "value",
+         color = "group", line.color = "gray", line.size = 0.4,
+         palette = "jco")+
+  stat_compare_means(paired = TRUE)
+```
+
+## Test by variety
+
+```{r}
+rsq_poly_sigm <- coef_R2_logi %>%
+  separate(echantillon, into = c("geno", "grappe", "baies"), sep = "_|-")
+```
+
+```{r}
+print("Number of berries:")
+nrow(rsq_poly_sigm)
+
+print("Number of berries per genotype:")
+counts <- as.data.frame(table(rsq_poly_sigm$geno))
+counts
+```
+
+```{r}
+ggplot(rsq_poly_sigm, aes(x = geno, y = V1, fill = geno)) +
+  geom_violin(trim = F, color = NA, alpha = 0.5) +
+  geom_boxplot(width = 0.1) +
+  xlab("") + ylab("R² Values") + 
+  ggtitle("R² for each variety") +
+  stat_summary(fun = "mean", 
+               geom = "point", 
+               shape = 17, 
+               size = 3, 
+               color = "black") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(size = 18, face = "bold"), 
+        axis.title.y = element_text(size = 16), 
+        axis.title.x = element_text(size = 16), 
+        axis.text.x = element_text(size = 14, hjust = 1, angle = 45), 
+        axis.text.y = element_text(size = 14)) +
+
+  scale_x_discrete(labels = function(x) {
+    paste0(x, "\n(n = ", counts[match(x, counts$Var1), "Freq"], ")")})
+```
+
+## Filter R² > 0.8 for the sigmoid
+
+```{r}
+rsq_poly_sigm.08 <- subset(rsq_poly_sigm, rsq_poly_sigm$V1 >= 0.8)
+```
+
+```{r}
+print("Number of berries:")
+nrow(rsq_poly_sigm.08)
+
+print("Number of berries per genotype:")
+counts08 <- as.data.frame(table(rsq_poly_sigm.08$geno))
+counts08
+```
+
+```{r}
+ggplot(rsq_poly_sigm.08, aes(x = geno, y = V1, fill = geno)) +
+  geom_violin(trim = F, color = NA, alpha = 0.5) +
+  geom_boxplot(width = 0.1) +
+  xlab("") + ylab("R² Values") + 
+  ggtitle("R² > ou = à 0.8 for each variety") +
+  stat_summary(fun = "mean", 
+               geom = "point", 
+               shape = 17, 
+               size = 3, 
+               color = "black") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(size = 18, face = "bold"), 
+        axis.title.y = element_text(size = 16), 
+        axis.title.x = element_text(size = 16), 
+        axis.text.x = element_text(size = 14, hjust = 1, angle = 45), 
+        axis.text.y = element_text(size = 14)) +
+
+  scale_x_discrete(labels = function(x) {
+    paste0(x, "\n(n = ", counts08[match(x, counts$Var1), "Freq"], ")")})
+```

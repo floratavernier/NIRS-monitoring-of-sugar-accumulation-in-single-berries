@@ -1,0 +1,610 @@
+---
+title: "Calibrations/Validation NIRS berry - 2021 + 2022"
+author: "F Tavernier, V Segura"
+date: "`r substr(Sys.time(), 1, 10)`"
+output:
+  rmdformats::downcute
+---
+
+```{r rm tout, echo=FALSE}
+rm(list=ls())
+```
+
+```{r setup, echo=TRUE, message=FALSE, results='hide', cache=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache.lazy = FALSE, dev.args = list(bg = "transparent"))
+library(anyLib)
+anyLib(c("apercu", "RColorBrewer", "signal", "prospectr", "ade4", "factoextra", "readxl", "viridis", "psych", "stringr", "pls", "dplyr", "kableExtra", "MASS", "tidyr", "readODS", "janitor", "colorRamps"))
+
+source("G:/Mon Drive/Thèse MétabEAU/Axe 1 - NIRS/Pred_modele_Elias/predictions/calibSPIR.R")
+```
+
+# Preparation of the training and validation sets
+
+## Loading data
+
+### Spectra and HPLC data
+
+```{r}
+# Load nirs.df.all
+load("NIRSBaies_2021et2022_HPLC.RData")
+```
+
+### General information about the dataset
+
+Number of spectra: `r nrow(nirs.df.all)`
+
+Number of cepages: `r length(unique(nirs.df.all$cépage))`
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+print("Number of varieties")
+unique(nirs.df.all$cépage)
+```
+
+Number of dates: 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# All dates
+levels(unique(as.factor(nirs.df.all$date_sp)))
+levels(unique(as.factor(nirs.df.all$DateDOY)))
+length(unique(nirs.df.all$date_sp))
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Dates per year
+levels(unique(as.factor(nirs.df.all$date_sp[which(nirs.df.all$millesime == "2021")])))
+length(unique(nirs.df.all$date_sp[which(nirs.df.all$millesime == "2021")]))
+
+levels(unique(as.factor(nirs.df.all$date_sp[which(nirs.df.all$millesime == "2022")])))
+length(unique(nirs.df.all$date_sp[which(nirs.df.all$millesime == "2022")]))
+```
+
+## Plot raw spectra
+
+```{r fig.height=4, fig.width=6.5}
+# 2021
+matplot(
+  x = as.numeric(colnames(nirs.df.all$NIRS)),
+  y = t(subset(nirs.df.all, millesime == "2021")[,"NIRS"]),
+  type = "l",
+  lty = 1,
+  xlab = "Wavelength (nm)",
+  ylab = "Absorbance",
+  main = "Raw spectra - 2021")
+
+# 2022
+matplot(
+  x = as.numeric(colnames(nirs.df.all$NIRS)),
+  y = t(subset(nirs.df.all, millesime == "2022")[,"NIRS"]),
+  type = "l",
+  lty = 1,
+  xlab = "Wavelength (nm)",
+  ylab = "Absorbance",
+  main = "Raw spectra - 2022")
+
+# All
+matplot(
+  x = as.numeric(colnames(nirs.df.all$NIRS)),
+  y = t(nirs.df.all$NIRS),
+  type = "l",
+  lty = 1,
+  xlab = "Wavelength (nm)",
+  ylab = "Absorbance",
+  main = "Raw spectra - 2021 and 2022")
+
+# All mean dates
+nirs.mean.date <- apply(nirs.df.all$NIRS, 2, function(x) {tapply(X = x, INDEX = nirs.df.all$date_sp, FUN = function(y) {mean(y, na.rm = TRUE)})})
+
+couleur = viridis::viridis(n = nrow(nirs.mean.date))
+
+par(mar = c(4.5, 4.5, 3, 8))
+matplot(x = as.numeric(colnames(nirs.mean.date)), y = t(nirs.mean.date),
+  type = "l", lty = 1, col = couleur, xlab = "Wavelength (nm)", ylab = "Absorbance", main = "Mean spectra - by date")
+legend(x = 1730, y = 0.55, legend = rownames(nirs.mean.date), lty = 1, col = couleur, bty = "n", xpd = TRUE, cex = 0.8)
+```
+
+## Preprocessing
+
+```{r}
+# Imputation
+nirs.imp <- nirs.df.all
+nirs.imp$NIRS <- t(apply(nirs.df.all$NIRS, 1, function(x) {
+  x[is.na(x)] <- max(x, na.rm = TRUE)
+  return(x)
+}))
+matplot(x = as.numeric(colnames(nirs.imp$NIRS)), y = t(nirs.imp$NIRS), type = "l", lty = 1,
+        xlab = "Wavelength (nm)", ylab = "Absorbance", main = "NAs imp.")
+
+# SNV
+nirs.snv <- nirs.imp
+nirs.snv$NIRS <- t(scale(t(nirs.imp$NIRS)))
+matplot(x = as.numeric(colnames(nirs.snv$NIRS)), y = t(nirs.snv$NIRS), type = "l", lty = 1,
+        xlab = "Wavelength (nm)", ylab = "Absorbance", main = "SNV")
+
+# SNV no scale
+nirs.snv.cent <- nirs.imp
+nirs.snv.cent$NIRS <- t(scale(t(nirs.imp$NIRS), center = T, scale = F))
+matplot(x = as.numeric(colnames(nirs.snv.cent$NIRS)), y = t(nirs.snv.cent$NIRS), type = "l", lty = 1,
+        xlab = "Wavelength (nm)", ylab = "Absorbance", main = "SNV")
+
+# Detrend
+nirs.dt <- nirs.imp
+nirs.dt$NIRS <- detrend(X = nirs.imp$NIRS, wav = as.numeric(colnames(nirs.imp$NIRS)))
+matplot(x = as.numeric(colnames(nirs.dt$NIRS)), y = t(nirs.dt$NIRS), type = "l", lty = 1,
+        xlab = "Wavelength (nm)", ylab = "Absorbance", main = "Detrend")
+
+# Derivative
+tsf <- (max(as.numeric(colnames(nirs.snv$NIRS))) - min(as.numeric(colnames(nirs.snv$NIRS)))) /(length(as.numeric(colnames(nirs.snv$NIRS))) - 1)
+# Der1
+nirs.der1 <- nirs.snv
+nirs.der1$NIRS <- t(apply(nirs.snv$NIRS, 1, function(x) {sgolayfilt(x, p = 2, n = 11, m = 1, ts = tsf)}))
+colnames(nirs.der1$NIRS) <- colnames(nirs.snv$NIRS)
+matplot(x = as.numeric(colnames(nirs.der1$NIRS)), y = t(nirs.der1$NIRS), type = "l", lty = 1,xlab = "Wavelength (nm)", ylab = "Absorbance", main = "Der1")
+# Der2
+nirs.der2 <- nirs.snv
+nirs.der2$NIRS <- t(apply(nirs.snv$NIRS, 1, function(x) {sgolayfilt(x, p = 3, n = 21, m = 2, ts = tsf)}))
+colnames(nirs.der2$NIRS) <- colnames(nirs.snv$NIRS)
+matplot(x = as.numeric(colnames(nirs.der2$NIRS)), y = t(nirs.der2$NIRS), type = "l", lty = 1,xlab = "Wavelength (nm)", ylab = "Absorbance", main = "Der2")
+
+# nirs.list.all
+nirs.list <- list("imp" = nirs.imp, "snv" = nirs.snv, "snv.cent" = nirs.snv.cent, "dt" = nirs.dt, "der1" = nirs.der1, "der2" = nirs.der2)
+
+# Cleaning
+rm(nirs.imp, nirs.dt, nirs.snv, nirs.der1, nirs.der2, nirs.snv.cent, nirs.mean.date, tsf)
+```
+
+## Data distribution and correlations
+
+```{r fig.height=10, fig.width=10}
+# Traits used for calibration
+trait.ids <- c("glucose", "fructose", "somme_GF", "rapport_GF", "malate", "tartrate", "shikimate", "rapport_MT", "poids_baie")
+
+# Colour vector
+nirs.df.all$cépage <- as.factor(nirs.df.all$cépage)
+nirs.df.all$DateDOY <- as.factor(nirs.df.all$DateDOY)
+col.cep <- viridis::magma(n = length(nirs.df.all$cépage))
+col.doy <- viridis::viridis(n = length(levels(nirs.df.all$DateDOY)))
+
+# Correlation matrix
+pairs.panels(x = nirs.df.all[, trait.ids], bg = col.doy[nirs.df.all$DateDOY], pch = 21,
+             hist.col = "grey", main = "Temps en jours de l'année depuis le 01/01 (DOY)")
+# pairs.panels(x = nirs.df.all[, trait.ids], bg = col.cep, pch = 21,
+#              hist.col = "grey", main = "Cépage")
+```
+
+## Calib with outlier detection and elimination
+
+```{r cache = TRUE, fig.height=6, fig.width=12}
+output.cal.noout <- NULL
+output.pred.noout <- NULL
+outliers <- NULL
+for (i in trait.ids){
+  #data prep
+  datCal <- lapply(nirs.list, function(x){
+    droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", i, "NIRS")]))
+  })
+  #model
+  model <- calibrationSPIR(calibSetList = datCal, chem = i, maxcomps = 20,
+                           LOO = FALSE, folds = 5, iterMCCV = 50, wold = 1, thresh = 0.001)
+  print(model$outcalib)
+  #best pretr
+  bestpretr <- rownames(model$outcalib)[which.max(model$outcalib$R2.MCCV.mean)]
+  print(bestpretr)
+  #best pretr mod
+  datCal.noout <- subset(datCal[[bestpretr]], ! echantillon %in% model$outliers[[bestpretr]])
+  bestpretrmod <- MCCV(dat = datCal.noout, trait = i,
+                       maxcomp = 20, fold = 5,
+                       iter = 50, crit = 1)
+  bestpretrmod$output
+  #plots
+  datCal.noout$cépage <- as.factor(datCal.noout$cépage)
+  par(mfrow = c(1, 2))
+  #plot by DOY
+  plotMCCV(bestpretrmod, pch = 19,
+           col = col.doy[as.factor(datCal.noout$DateDOY)],
+           main = i, axe = F)
+  axis(side = 1)
+  axis(side = 2)
+  legend("bottomright", legend = paste0("pretr = ", bestpretr), bty = "n")
+  legend("right", legend = levels(as.factor(datCal.noout$DateDOY)), pch = 19, col = col.doy, bty = "n")
+  #plot by cépage
+  plotMCCV(bestpretrmod, pch = 19,
+           col = col.cep,
+           main = i, axe = F)
+  axis(side = 1)
+  axis(side = 2)
+  legend("right", legend = unique(datCal.noout$cépage), pch = 19, col = col.cep, bty = "n")
+  #output
+  out <- data.frame(i, bestpretr, length(bestpretrmod$model$model$trait), length(model$outliers[[bestpretr]]),
+                    t(bestpretrmod$output))
+  colnames(out) <- c("chem", "pretr", "n", "nb.out", "nb.comp", "R2.train", "R2.MCCV.mean", "R2.MCCV.sd", "RMSE.MCCV.mean", "RMSE.MCCV.sd", "RPD.MCCV.mean", "RPD.MCCV.sd")
+  output.cal.noout <- rbind(output.cal.noout, out)
+  #outliers
+  outliers[[i]] <- model$outliers
+  #cleaning
+  rm(datCal, model, bestpretr, bestpretrmod, datCal.noout, out)
+}
+```
+
+Best models:
+
+```{r}
+kable(output.cal.noout[, c("chem", "pretr", "n", "nb.out", "nb.comp",
+                           "R2.MCCV.mean", "R2.MCCV.sd", "RMSE.MCCV.mean", "RMSE.MCCV.sd")],
+      "html", row.names = FALSE, digits = 2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F, font_size = 12)
+```
+
+Save outliers:
+
+```{r eval=FALSE}
+save(outliers, file = "outliers.RData")
+save(nirs.list, file = "NIRSpectra_2021-2022_pretrt.RData")
+```
+
+## Separate training and validation sets
+
+### Principle
+
+The data set must be divided into 2 parts: 
++ 4/5ths of the data set + outliers = training set
++ 1/5th of the data set without outliers = validation set
+
+The validation set will be selected from the data set without outliers using the algorithm **Kennard-Stone** of the *prospectr* package (Kennard and Stone, 1969 <https://rdrr.io/cran/prospectr/man/kenStone.html>).
+
+### Retrieving the list of outliers and information
+
+```{r}
+# How many outliers in common between all the pretreatments: 1 to 6 = number of pretreatments in common
+out.table <- sapply(outliers, function(x) {table(unlist(x))})
+
+# Outliers present in all pre-treatments
+out.list <- sapply(out.table, function(x) {names(which(x >= 1))})
+
+# Count by trait
+sapply(out.list, length)
+
+# Double table: distribution on the traits
+table(table(unlist(out.list)))
+
+# Outliers total count
+out.vect <- unique(unlist(out.list))
+length(out.vect)
+
+# Determining the count for Kennard-Stone
+# Nb whitout outliers:
+824 - length(out.vect)
+# Nb to select with Kennard-Stone in the set whitout outliers:
+824 - length(out.vect) - round(824/5)
+# Remaining unselected to be put in the validation set:
+round(824/5)
+```
+
+### Creation of a list without outliers
+
+```{r}
+nirs.list.noout <- lapply(nirs.list, function (x) {
+  x[!x$echantillon %in% out.vect, ]
+  })
+```
+
+<!-- row.names(nirs.list$imp)[which(nirs.list$imp$echantillon %in% out.vect)] -->
+<!-- nirs.list.noout <- nirs.list$imp$echantillon[which(nirs.list$imp$echantillon %in% out.vect)] -->
+
+### Kennard-Stone selection
+
+```{r}
+# Selection
+nirs.list.valid <- lapply(nirs.list.noout, function (x) {
+  kenStone(x$NIRS, k = 481, metric = "euclid")
+})
+
+# Retrieving data for selection
+for (i in names(nirs.list)) {
+  nirs.list.test <- lapply(nirs.list.noout, function (x) {
+    x[nirs.list.valid$i$model, ]
+  })
+}
+
+# Retrieving data not selected by kenStone (nirs.list.valid.ok)
+for (i in names(nirs.list)) {
+  nirs.list.valid.ok <- lapply(nirs.list.noout, function (x) {
+  x[!x$echantillon %in% nirs.list.test$i$echantillon, ]
+  })
+}
+
+# nirs.list.train
+for (i in names(nirs.list)) {
+nirs.list.train <- lapply(nirs.list, function (x) {
+  x[!x$echantillon %in% nirs.list.valid.ok$i$echantillon, ]
+  })
+}
+length(nirs.list.train$imp$echantillon)
+
+# Cleaning
+rm(nirs.list.test, nirs.list.valid, out.list, out.table)
+```
+
+### Save
+
+```{r eval=FALSE}
+setwd("D:/Mes Donnees/Doctorat/Pred_modele_Elias/predictions")
+# Rdata
+save(list = c("nirs.list.valid.ok", "nirs.list.train"), file = "Valid-Train_Dataset_CalibNIRS_2021-2022.Rdata")
+
+# csv
+write.csv2(nirs.list.valid.ok$imp, file = "Validation_dataset_2021-2022_CalibNIRS.csv")
+write.csv2(nirs.list.train$imp, file = "Training_dataset_2021-2022_CalibNIRS.csv")
+```
+
+# Prediction models
+
+## Loading data
+
+### Spectra and HPLC data
+
+```{r}
+setwd("D:/Mes Donnees/Doctorat/Axe 1 - NIRS/Pred_modele_Elias/predictions")
+load("NIRSBaies_2021et2022_HPLC_OK.RData") #nirs.df.all : df 2021 + 2022 + col calib/valid
+load("NIRSpectra_2021-2022_pretrt.RData") #nirs.list : df all pretreatements
+load("Valid-Train_Dataset_CalibNIRS_2021-2022.Rdata") #nirs.list.valid.ok et nirs.list.train
+load("outliers.RData")
+```
+
+# Calibration with separate training and validation set
+
+## Validation and training set info
+
+Validation set:
+
+```{r cache = TRUE, fig.height=6, fig.width=12}
+# Nb individals
+nrow(nirs.list.valid.ok$imp)
+# Nb cepages
+length(unique(nirs.list.valid.ok$imp$cépage))
+unique(nirs.list.valid.ok$imp$cépage)
+# Dates
+unique(nirs.list.valid.ok$imp$date_sp)
+levels(unique(as.factor(nirs.list.valid.ok$imp$DateDOY)))
+length(unique(nirs.list.valid.ok$imp$date_sp))
+# Dates per year
+unique(nirs.list.valid.ok$imp$date_sp[which(nirs.list.valid.ok$imp$millesime == "2021")])
+length(unique(nirs.list.valid.ok$imp$date_sp[which(nirs.list.valid.ok$imp$millesime == "2021")]))
+unique(nirs.list.valid.ok$imp$date_sp[which(nirs.list.valid.ok$imp$millesime == "2022")])
+length(unique(nirs.list.valid.ok$imp$date_sp[which(nirs.list.valid.ok$imp$millesime == "2022")]))
+```
+
+Training set:
+
+```{r cache = TRUE, fig.height=6, fig.width=12}
+# Nb individals
+nrow(nirs.list.train$imp)
+# Nb cepages
+length(unique(nirs.list.train$imp$cépage))
+unique(nirs.list.train$imp$cépage)
+# Dates
+unique(nirs.list.train$imp$date_sp)
+levels(unique(as.factor(nirs.list.train$imp$DateDOY)))
+length(unique(nirs.list.train$imp$date_sp))
+# Dates per year
+unique(nirs.list.train$imp$date_sp[which(nirs.list.train$imp$millesime == "2021")])
+length(unique(nirs.list.train$imp$date_sp[which(nirs.list.train$imp$millesime == "2021")]))
+unique(nirs.list.train$imp$date_sp[which(nirs.list.train$imp$millesime == "2022")])
+length(unique(nirs.list.train$imp$date_sp[which(nirs.list.train$imp$millesime == "2022")]))
+```
+
+## Setting calib
+
+```{r}
+# Traits used for calibration
+trait.ids <- c("glucose", "fructose", "somme_GF", "rapport_GF", "malate", "tartrate", "shikimate", "rapport_MT", "poids_baie")
+
+nirs.df.all$cépage <- as.factor(nirs.df.all$cépage)
+nirs.df.all$DateDOY <- as.factor(nirs.df.all$DateDOY)
+col.cep <- viridis::magma(n = length(nirs.df.all$cépage))
+col.doy <- hcl.colors(n = length(levels(nirs.df.all$DateDOY)), palette = "sunset")
+```
+
+## Basic calibration with independent validation set
+
+```{r cache = TRUE, fig.height=6, fig.width=12}
+output.cal.KS <- NULL
+mod.bestpretr <- NULL
+for (i in trait.ids){
+  #data prep
+  datCal <- lapply(nirs.list.train, function(x){
+    droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", i, "NIRS")]))
+  })
+  #model
+  model <- calibrationSPIR(calibSetList = datCal, chem = i, maxcomps = 20,
+                           LOO = FALSE, folds = 5, iterMCCV = 50, wold = 1)
+  print(i)
+  print(model$outcalib)
+  #best pretr
+  bestpretr <- rownames(model$outcalib)[which.max(model$outcalib$R2.MCCV.mean)]
+  print(bestpretr)
+  #best pretr mod
+  datCal <- subset(datCal[[bestpretr]], ! echantillon %in% model$outliers[[bestpretr]])
+  bestpretrmod <- MCCV(dat = datCal, trait = i,
+                       maxcomp = 20, fold = 5,
+                       iter = 50, crit = 1)
+  bestpretrmod$output
+  datVal <- lapply(nirs.list.valid.ok, function(x){
+    droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", i, "NIRS")]))
+    })
+  #plots
+  par(mfrow = c(1, 2))
+  #plot by DOY
+  plotMCCV(bestpretrmod, pch = 19,
+           col = col.doy[as.factor(datCal$DateDOY)],
+           main = paste(i, "(cv)", sep = " "), axe = F, col.main = "black", 
+           col.lab = "black")
+  axis(side = 1, col.axis = "black", col = "black")
+  axis(side = 2, col.axis = "black", col = "black")
+  legend("bottomright", legend = paste0("pretr = ", bestpretr), bty = "n", 
+         text.col = "black")
+  # legend("right", legend = levels(as.factor(datCal$DateDOY)), pch = 19, col = col.doy, bty = "n", text.col = "black")
+  #valid
+  datVal[[bestpretr]]$pred <-
+    drop(predict(bestpretrmod$model, ncomp = bestpretrmod$model$ncomp, newdata = datVal[[bestpretr]]$NIRS))
+  valid.out <- stat_pred(dataSet = datVal[[bestpretr]], obs = i, pred = "pred")
+  plot(pred ~ get(i), datVal[[bestpretr]], pch = 21, bg = "gray", 
+       xlab = "obs", ylab = "pred", main = paste(i, "(val)", sep = " "), 
+       axe = F, col.main = "black", col.lab = "black")
+  axis(side = 1, col.axis = "black", col = "black")
+  axis(side = 2, col.axis = "black", col = "black")
+  abline(0, 1, lty = 2, lwd = 2, col = "black")
+  abline(valid.out$modlin, lty = 1, lwd = 2, col = "black")
+  legend("topleft", bty = "n", c(
+    # paste("R2_reg = ", round(valid.out$output[1], 2) , sep = ""),
+    paste("R2_val = ", round(valid.out$output[2], 2) , sep = ""),
+    paste("RMSE_val = ", round(valid.out$output[3], 2), sep = ""),
+    # paste("RPD_val = ", round(valid.out$output[4], 2), sep = ""),
+    paste("nobs = ", valid.out$output[5], sep = "")), 
+    text.col = "black")
+  #output
+  out <- data.frame(i, bestpretr, length(bestpretrmod$model$model$trait), length(model$outliers[[bestpretr]]), t(bestpretrmod$output), t(valid.out$output))
+  colnames(out) <- c("trait", "pretr", "n", "nb.out", "nb.comp", "R2.train", "R2.MCCV.mean", "R2.MCCV.sd", "RMSE.MCCV.mean", "RMSE.MCCV.sd", "RPD.MCCV.mean", "RPD.MCCV.sd", "R2.reg", "R2.val", "RMSE.val", "RPD.val", "n.val")
+  kable(out[, c("trait", "pretr", "n", "nb.out", "nb.comp", "R2.train", "R2.MCCV.mean", "R2.MCCV.sd", "RMSE.MCCV.mean", "RMSE.MCCV.sd", "R2.reg", "R2.val", "RMSE.val", "n.val")])
+  output.cal.KS <- rbind(output.cal.KS, out)
+  mod.bestpretr[[i]] <- bestpretrmod
+  #cleaning
+  rm(datCal, bestpretr, datVal, out, valid.out, bestpretrmod, model)
+}
+```
+
+### Best models
+
+```{r}
+kable(output.cal.KS[, c("trait", "pretr", "n", "nb.out", "nb.comp", "R2.MCCV.mean", "R2.MCCV.sd", "RMSE.MCCV.mean", "RMSE.MCCV.sd")], "html",
+      row.names = FALSE, digits = 2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F, font_size = 12)
+```
+
+### Save
+
+```{r eval=FALSE}
+setwd("D:/Mes Donnees/Doctorat/Axe 1 - NIRS/Model_final_propre_OK")
+save(list = c("output.cal.KS", "mod.bestpretr"), file = "output_cal_pred_MicroNIR_KS.Rdata")
+```
+
+## Calibration with detection and elimination of outliers and with independent validation set (noout)
+
+```{r cache = TRUE, fig.height=6, fig.width=12}
+output.cal.noout.KS <- NULL
+mod.bestpretr.noout <- NULL
+outliers.KS <- NULL
+for (i in trait.ids){
+  #data prep
+  datCal <- lapply(nirs.list.train, function(x){
+    droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", i, "NIRS")]))
+  })
+  #model
+  model <- calibrationSPIR(calibSetList = datCal, chem = i, maxcomps = 20,
+                           LOO = FALSE, folds = 5, iterMCCV = 50, wold = 1, thresh = 0.001)
+  print(i)
+  print(model$outcalib)
+  #best pretr
+  bestpretr <- rownames(model$outcalib)[which.max(model$outcalib$R2.MCCV.mean)]
+  print(bestpretr)
+  #best pretr mod
+  datCal.noout <- subset(datCal[[bestpretr]], ! echantillon %in% model$outliers[[bestpretr]])
+  bestpretrmod <- MCCV(dat = datCal.noout, trait = i,
+                       maxcomp = 20, fold = 5,
+                       iter = 50, crit = 1)
+  bestpretrmod$output
+  datVal <- lapply(nirs.list.valid.ok, function(x){
+    droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", i, "NIRS")]))
+    })
+  #plots
+  par(mfrow = c(1, 2))
+  #plot by DOY
+  plotMCCV(bestpretrmod, pch = 19,
+           col = col.doy[as.factor(datCal.noout$DateDOY)],
+           main = paste(i, "(cv)", sep = " "), axe = F, col.main = "black", col.lab = "black")
+  axis(side = 1, col.axis = "black", col = "black")
+  axis(side = 2, col.axis = "black", col = "black")
+  legend("bottomright", legend = paste0("pretr = ", bestpretr), bty = "n", text.col = "black")
+  # legend("right", legend = levels(as.factor(datCal.noout$DateDOY)), pch = 19, col = col.doy, bty = "n", text.col = "black")
+  #valid
+  datVal[[bestpretr]]$pred <-
+    drop(predict(bestpretrmod$model, ncomp = bestpretrmod$model$ncomp, newdata = datVal[[bestpretr]]$NIRS))
+  valid.out <- stat_pred(dataSet = datVal[[bestpretr]], obs = i, pred = "pred")
+  plot(pred ~ get(i), datVal[[bestpretr]], pch = 21, bg = "gray", xlab = "obs", ylab = "pred", main = paste(i, "(val)", sep = " "), col.main = "black", col.lab = "black", axe = F)
+  axis(side = 1, col.axis = "black", col = "black")
+  axis(side = 2, col.axis = "black", col = "black")
+  abline(0, 1, lty = 2, lwd = 2, col = "black")
+  abline(valid.out$modlin, lty = 1, lwd = 2, col = "black")
+  legend("topleft", bty = "n", c(
+    # paste("R2_reg = ", round(valid.out$output[1], 2) , sep = ""),
+    paste("R2_val = ", round(valid.out$output[2], 2) , sep = ""),
+    paste("RMSE_val = ", round(valid.out$output[3], 2), sep = ""),
+    # paste("RPD_val = ", round(valid.out$output[4], 2), sep = ""),
+    paste("nobs = ", valid.out$output[5], sep = "")
+  ), text.col = "black")
+  #output
+  out <- data.frame(i, 
+                    bestpretr, 
+                    length(bestpretrmod$model$model$trait), 
+                    length(model$outliers[[bestpretr]]), 
+                    t(bestpretrmod$output), 
+                    t(valid.out$output))
+  
+  colnames(out) <- c("trait", 
+                     "pretr", 
+                     "n", 
+                     "nb.out", 
+                     "nb.comp", 
+                     "R2.train", 
+                     "R2.MCCV.mean", 
+                     "R2.MCCV.sd", 
+                     "RMSE.MCCV.mean", 
+                     "RMSE.MCCV.sd", 
+                     "RPD.MCCV.mean", 
+                     "RPD.MCCV.sd", 
+                     "R2.reg", 
+                     "R2.val", 
+                     "RMSE.val", 
+                     "RPD.val", 
+                     "n.val")
+  
+  kable(out[, c("trait", 
+                "pretr", 
+                "n", 
+                "nb.out", 
+                "nb.comp", 
+                "R2.train", 
+                "R2.MCCV.mean", 
+                "R2.MCCV.sd", 
+                "RMSE.MCCV.mean", 
+                "RMSE.MCCV.sd", 
+                "R2.reg", 
+                "R2.val", 
+                "RMSE.val", 
+                "n.val")])
+  
+  output.cal.noout.KS <- rbind(output.cal.noout.KS, out)
+  
+  mod.bestpretr.noout[[i]] <- list(bestpretrmod, bestpretr, out)
+  
+  #outliers
+  outliers.KS[[i]] <- model$outliers
+  
+  #cleaning
+  rm(datCal, bestpretr, datCal.noout, out, bestpretrmod, model)
+}
+```
+
+### Best models
+
+```{r}
+kable(output.cal.noout.KS[, c("trait", "pretr", "n", "nb.out", "nb.comp", "R2.MCCV.mean", "R2.MCCV.sd", "RMSE.MCCV.mean", "RMSE.MCCV.sd")], "html",
+      row.names = FALSE, digits = 2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = F, font_size = 12)
+```
+
+### Save
+
+```{r eval=FALSE}
+setwd("D:/Mes Donnees/Doctorat/Axe 1 - NIRS/Model_final_propre_OK")
+save(list = c("output.cal.noout.KS", "outliers.KS", "mod.bestpretr.noout"), file = "output_cal_pred_MicroNIR_KS_noout.Rdata")
+```

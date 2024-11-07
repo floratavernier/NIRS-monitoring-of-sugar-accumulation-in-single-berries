@@ -1,0 +1,1917 @@
+---
+title: "Prediction of the monitored berries and PLSDA classification model of the ripening"
+author: "Flora TAVERNIER"
+date: "`r substr(Sys.time(), 1, 10)`"
+output:
+  rmdformats::downcute
+---
+
+```{r rm tout, echo=FALSE}
+rm(list=ls())
+```
+
+```{r setup, echo=TRUE, message=FALSE, results='hide', cache=FALSE}
+knitr::opts_chunk$set(
+	message = FALSE,
+	warning = FALSE,
+	cache.lazy = FALSE
+)
+library(anyLib)
+anyLib(c("readxl", "readODS", "tidyverse", "janitor", "apercu", "signal", 
+         "kableExtra", "gridExtra", "ggplot2",
+         "pls", "psych", "MASS", "prospectr", "rchemo", "ChemoSpec", #"roboost", 
+         "heatmaply", "factoextra", "ade4", "FactoMineR", 
+         "RColorBrewer", "colorRamps", "viridis"))
+```
+
+# Loading data HPLC + NIRS
+
+```{r warning=FALSE}
+setwd("D:/Mes Donnees/Doctorat/Axe 1 - NIRS/Pred_modele_Elias/predictions")
+
+# nirs.df.all : df 2021 + 2022 + col calib/valid
+load("NIRSBaies_2021et2022_HPLC_OK.RData")
+```
+
+```{r}
+nirs.hplc <- nirs.df.all
+nirs.hplc$X <- NULL
+
+nirs.hplc$cépage[nirs.hplc$cépage %in% c("syrahsol", "syrah pot")] <- "syrah"
+```
+
+```{r}
+ap(nirs.hplc)
+```
+
+```{r}
+dim(nirs.hplc)
+```
+
+## Data preparation
+
+We create a data frame with data information and spectra in a matrix.
+
+```{r nirs.df}
+nirs.df <- nirs.hplc[, c("echantillon", "cépage", "millesime", "DateDOY", "couleur", "hyp_veraison", "veraison", "calib")]
+nirs.df$NIRS <- I(as.matrix(nirs.hplc[, grep("NIRS", colnames(nirs.hplc))]))
+
+rownames(nirs.df$NIRS) <- nirs.df$echantillon
+colnames(nirs.df$NIRS) <- gsub("NIRS.", "", colnames(nirs.df$NIRS))
+```
+
+# HPLC data
+
+## Plots "R" vs "NA" vs "G"
+
+```{r}
+nirs.hplc1 <- nirs.hplc
+nirs.hplc1$veraison <- as.character(nirs.hplc1$veraison)
+
+nirs.hplc1 <- nirs.hplc1 %>%
+  mutate(veraison = ifelse(veraison == "NV", "G", veraison))
+nirs.hplc1 <- nirs.hplc1 %>%
+  mutate(veraison = ifelse(veraison == "V", "R", veraison))
+
+couleur <- c("yellowgreen", "gray", "slateblue1")
+
+nirs.hplc1$veraison <- as.factor(nirs.hplc1$veraison)
+```
+
+### G/F and M/T
+
+```{r}
+ggplot(nirs.hplc1,
+       aes(x = rapport_GF, y = rapport_MT, col = veraison)) +
+  geom_point() + theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 14)) +
+  scale_color_manual(values = couleur) +
+  labs(color = "Stage",
+       x = "Glucose-to-fructose ratio", 
+       y = "Malic acid-to-tartaric acid ratio") +
+  scale_x_continuous(limits = c(0.8, 6), 
+                     breaks = seq(from = 0.8, to = 6, by = 0.6)) +
+  geom_vline(xintercept = 1.4, linetype = "dashed", color = "gray18") +
+  geom_hline(yintercept = 0.7, linetype = "dashed", color = "gray18")
+```
+
+### G/F vs G+F
+
+```{r}
+ggplot(nirs.hplc1,
+       aes(x = somme_GF, y = rapport_GF , col = veraison)) +
+  geom_point() + theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 14)) +
+  scale_color_manual(values = couleur) +
+  labs(color = "Stage",
+       x = "Sugars (glucose + fructose, in mM)", 
+       y = "Glucose-to-fructose ratio") +
+  scale_y_continuous(limits = c(0.8, 6), 
+                     breaks = seq(from = 0.8, to = 6, by = 0.6)) +
+  geom_vline(xintercept = 200, linetype = "dashed", color = "gray18") +
+  geom_hline(yintercept = 1.4, linetype = "dashed", color = "gray18")
+```
+
+### Bar plots
+
+```{r}
+ggplot(nirs.hplc1, aes(x = as.factor(DateDOY), fill = veraison)) +
+  geom_bar(color="#e9ecef", alpha=0.8, position = 'fill') +
+  scale_fill_manual(values = c("yellowgreen", "gray", "slateblue1")) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Proportion of samples by date (DOY) in Percentages",
+       x = "DOY",
+       y = "Percentage") +
+  theme_minimal() +
+  theme(axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        plot.title = element_text(size = 16))
+```
+
+```{r fig.height=5, fig.width=4}
+for (i in unique(nirs.hplc1$millesime)) {
+  dt <- subset(nirs.hplc1, nirs.hplc1$millesime == i)
+  plt <- ggplot(dt, aes(x = as.factor(DateDOY), fill = veraison)) +
+  geom_bar(color="#e9ecef", alpha=0.8, position = 'fill') +
+  scale_fill_manual(values = c("yellowgreen", "gray", "slateblue1")) +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = i,
+       x = "DOY",
+       y = "Percentage") +
+  theme_minimal() +
+  theme(axis.title = element_text(size = 14),
+        axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 12),
+        plot.title = element_text(size = 16))
+  print(plt)
+}
+```
+
+Count per year:
+
+```{r message=FALSE, warning=FALSE}
+ggplot(nirs.hplc1, aes(x = millesime)) +
+  geom_bar(fill = "steelblue", width = 0.6) +
+  labs(x = "Year", 
+       y = "Count", 
+       title = "") +
+  ylim(0, 600) +
+  # scale_y_continuous(breaks = seq(0, 600, by = 100)) +
+  theme_minimal() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        plot.title = element_text(size = 16, face = "bold")) +
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.5, size = 5)
+```
+
+### Percentage plot (curve)
+
+```{r}
+# Filter data for ‘R’ and ‘G’ berries
+nirs.hplc1_filtered <- nirs.hplc1 %>%
+  filter(veraison %in% c("R", "G")) %>%
+  group_by(millesime, DateDOY, veraison) %>%
+  summarise(proportion = n() / nrow(nirs.hplc1[nirs.hplc1$millesime == millesime, ])) %>%
+  ungroup()
+```
+
+```{r fig.height=5, fig.width=6}
+ggplot(nirs.hplc1_filtered, aes(x = DateDOY, y = proportion, color = millesime, linetype = veraison, group = interaction(millesime, veraison))) +
+  geom_line(size=1) +
+  geom_point(size=2) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_color_manual(values = c("2021" = "blue", "2022" = "red")) +
+  scale_linetype_manual(values = c("R" = "solid", "G" = "dotted")) +
+  labs(title = "Proportion of samples graded ‘R’ and ‘G’ by DOY",
+       x = "DOY",
+       y = "Percentage",
+       color = "Year",
+       linetype = "Veraison") +
+  theme_minimal() +
+  theme(axis.title = element_text(size = 14),
+        axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+        axis.text.y = element_text(size = 12),
+        plot.title = element_text(size = 16))
+
+```
+
+```{r}
+rm(i, couleur, plt, dt, nirs.hplc1, nirs.hplc1_filtered)
+```
+
+# NIRS data
+
+## Raw spectra
+
+```{r matplot raw spectra, fig.height=4, fig.width=6.5}
+matplot(x = as.numeric(colnames(nirs.df$NIRS)),
+        y = t(nirs.df$NIRS), type = "l", lty = 1,
+        xlab = "Wavelength (nm)", ylab = "Reflectance",
+        main = "Raw spectra")
+```
+
+## Spectra pretreatment
+
+```{r}
+# Imputation
+nirs.imp <- nirs.df
+nirs.imp$NIRS <- t(apply(nirs.df$NIRS, 1, function(x) {
+  x[is.na(x)] <- max(x, na.rm = TRUE)
+  return(x)}))
+
+# SNV
+nirs.snv <- nirs.imp
+nirs.snv$NIRS <- t(scale(t(nirs.imp$NIRS)))
+
+# SNV no scale
+nirs.snv.cent <- nirs.imp
+nirs.snv.cent$NIRS <- t(scale(t(nirs.imp$NIRS), center = T, scale = F))
+
+# Detrend
+nirs.dt <- nirs.imp
+nirs.dt$NIRS <- prospectr::detrend(X = nirs.imp$NIRS, wav = as.numeric(colnames(nirs.imp$NIRS)))
+
+# Derivatives
+tsf <- (max(as.numeric(colnames(nirs.imp$NIRS))) - min(as.numeric(colnames(nirs.imp$NIRS)))) /
+  (length(as.numeric(colnames(nirs.imp$NIRS))) - 1) # It's the wavelength screw used for the derivative
+
+# 1st derivative
+nirs.der1 <- nirs.snv
+nirs.der1$NIRS <- t(apply(nirs.snv$NIRS, 1, function(x) {sgolayfilt(x, p = 2, n = 11, m = 1, ts = tsf)}))
+colnames(nirs.der1$NIRS) <- colnames(nirs.snv$NIRS)
+
+# 2nd derivative
+nirs.der2 <- nirs.snv
+nirs.der2$NIRS <- t(apply(nirs.snv$NIRS, 1, function(x) {sgolayfilt(x, p = 3, n = 21, m = 2, ts = tsf)}))
+colnames(nirs.der2$NIRS) <- colnames(nirs.snv$NIRS)
+```
+
+### Merge spectra pretreatments
+
+```{r}
+nirs.list <- list("imp" = nirs.imp,
+                  "snv" = nirs.snv, 
+                  "snv.cent" = nirs.snv.cent,
+                  "dt" = nirs.dt,
+                  "der1" = nirs.der1, 
+                  "der2" = nirs.der2)
+```
+
+```{r}
+for (i in names(nirs.list)){
+  matplot(x = as.numeric(colnames(nirs.list[[i]]$NIRS)),
+          y = t(nirs.list[[i]]$NIRS), type = "l", lty = 1,
+          xlab = "Wavelength (nm)", ylab = "Reflectance",
+          main = i)
+}
+```
+
+```{r}
+rm(tsf, nirs.df, nirs.imp, nirs.der1, nirs.der2, nirs.dt, nirs.snv, nirs.snv.cent, i)
+```
+
+## Extreme spectrum filter
+
+### Identification
+
+```{r}
+matplot(x = as.numeric(colnames(nirs.list$imp$NIRS)), y = t(nirs.list$imp$NIRS), type = "l", lty = 1,
+        xlab = "Wavelength (nm)", ylab = "Absorbance", main = "imp.", ylim = c(-0.1, 1))
+abline(v = 1025.793, lty = 3)
+abline(h = c(0.15, 0.45), lty = 3)
+```
+
+### Filter
+
+```{r}
+nirs.list.extrem <- nirs.list
+
+filtered.spectra <- names(which(nirs.list$imp$NIRS[, "1025.793"] < 0.15 | nirs.list$imp$NIRS[, "1025.793"] > 0.45))
+length(filtered.spectra)
+nirs.list <- lapply(nirs.list, function(x) {
+  subset(x, ! echantillon %in% filtered.spectra)
+})
+table(nirs.list.extrem$imp[, c("millesime", "DateDOY")])
+table(nirs.list$imp[, c("millesime", "DateDOY")])
+```
+
+```{r}
+rm(filtered.spectra, nirs.list.extrem)
+```
+
+### New plot
+
+```{r}
+for (i in names(nirs.list)){
+  matplot(x = as.numeric(colnames(nirs.list[[i]]$NIRS)),
+          y = t(nirs.list[[i]]$NIRS), type = "l", lty = 1,
+          xlab = "Wavelength (nm)", ylab = "Reflectance",
+          main = i)
+}
+rm(i)
+```
+
+## PCA spectra with ade4
+
+### Data prepa + PCA
+
+```{r}
+# Data preparation for ade4 package
+nirs.list.ade4 <- lapply(nirs.list, function(x){
+  list("info" = data.frame(x[, - which(colnames(x) == "NIRS")]),
+       "NIRS" = as.data.frame(matrix(x$NIRS, nrow = nrow(x$NIRS), ncol = ncol(x$NIRS))))})
+
+for (i in names(nirs.list.ade4)) {
+  a <- as.numeric(colnames(nirs.list[[i]]$NIRS))
+  colnames(nirs.list.ade4[[i]]$NIRS) <- a
+  }
+rm(a, i)
+# PCA
+pca.nirs <- lapply(nirs.list.ade4, function(x){
+  dudi.pca(x$NIRS, center=TRUE, scale=TRUE, scannf=F, nf=20)})
+```
+
+### Eigen values
+
+```{r}
+pve.pca <- sapply(pca.nirs, function(x){(x$eig / sum(x$eig) * 100)[1:10]})
+rownames(pve.pca) <- paste("PC", 1:nrow(pve.pca), sep = "")
+for (i in 1:ncol(pve.pca)){
+  bar_heights <- pve.pca[, i]
+  bar_positions <- barplot(pve.pca[, i], 
+          col = "grey", 
+          main = colnames(pve.pca)[i], 
+          ylab="% variance", 
+          ylim = c(0, round(max(pve.pca))+10))
+  text(x = bar_positions, 
+       y = bar_heights, 
+       label = paste(round(bar_heights, 1), "%", sep = ""), 
+       pos = 3, cex = 0.8, col = "black")
+}
+
+rm(bar_heights, bar_positions, pve.pca, i)
+```
+
+<!-- ### Loadings -->
+
+<!-- ```{r} -->
+<!-- #imp -->
+<!-- matplot(x = as.numeric(colnames(nirs.list.ade4[["imp"]]$NIRS)),  -->
+<!--         y = pca.nirs[["imp"]]$co[, 1:2], type = "l", lty = 1, -->
+<!--         xlab = "Wavelength (nm)",  -->
+<!--         ylab = "Loadings",  -->
+<!--         main = "Imputated",  -->
+<!--         ylim = c(-1, 1), lwd = 2, cex.lab = 1.3, cex.axis = 1.3) -->
+<!-- legend("topright", inset = 0.01, legend = c("axe 2", "axe 1"), -->
+<!--        col = c(1:5), pch = 15:19, bty = "n",  -->
+<!--        bg = ("white"), horiz = F) -->
+<!-- abline(h = c(-0.2, 0.2), lty = 3, col = "gray50") -->
+
+<!-- #snv -->
+<!-- matplot(x = as.numeric(colnames(nirs.list.ade4[["snv"]]$NIRS)),  -->
+<!--         y = pca.nirs[["snv"]]$co[, 1:2], type = "l", lty = 1, -->
+<!--         xlab = "Wavelength (nm)",  -->
+<!--         ylab = "Loadings",  -->
+<!--         main = "SNV",  -->
+<!--         ylim = c(-1, 1), lwd = 2, cex.lab = 1.3, cex.axis = 1.3) -->
+<!-- legend("topright", inset = 0.01, legend = c("axe 2", "axe 1"), -->
+<!--        col = c(1:5), pch = 15:19, bty = "n",  -->
+<!--        bg = ("white"), horiz = F) -->
+<!-- abline(h = c(-0.2, 0.2), lty = 3, col = "gray50") -->
+
+<!-- #snv.cent -->
+<!-- matplot(x = as.numeric(colnames(nirs.list.ade4[["snv.cent"]]$NIRS)),  -->
+<!--         y = pca.nirs[["snv.cent"]]$co[, 1:2], type = "l", lty = 1, -->
+<!--         xlab = "Wavelength (nm)",  -->
+<!--         ylab = "Loadings",  -->
+<!--         main = "SNV centered, non-scaled",  -->
+<!--         ylim = c(-1, 1), lwd = 2, cex.lab = 1.3, cex.axis = 1.3) -->
+<!-- legend("topright", inset = 0.01, legend = c("axe 2", "axe 1"), -->
+<!--        col = c(1:5), pch = 15:19, bty = "n",  -->
+<!--        bg = ("white"), horiz = F) -->
+<!-- abline(h = c(-0.2, 0.2), lty = 3, col = "gray50") -->
+
+<!-- #dt -->
+<!-- matplot(x = as.numeric(colnames(nirs.list.ade4[["dt"]]$NIRS)),  -->
+<!--         y = pca.nirs[["dt"]]$co[, 1:2], type = "l", lty = 1, -->
+<!--         xlab = "Wavelength (nm)",  -->
+<!--         ylab = "Loadings",  -->
+<!--         main = "Detrend",  -->
+<!--         ylim = c(-1, 1), lwd = 2, cex.lab = 1.3, cex.axis = 1.3) -->
+<!-- legend("bottomright", inset = 0.01, legend = c("axe 2", "axe 1"), -->
+<!--        col = c(1:5), pch = 15:19, bty = "n",  -->
+<!--        bg = ("white"), horiz = F) -->
+<!-- abline(h = c(-0.2, 0.2), lty = 3, col = "gray50") -->
+
+<!-- #der1 -->
+<!-- matplot(x = as.numeric(colnames(nirs.list.ade4[["der1"]]$NIRS)),  -->
+<!--         y = pca.nirs[["der1"]]$co[, 1:2], type = "l", lty = 1, -->
+<!--         xlab = "Wavelength (nm)",  -->
+<!--         ylab = "Loadings",  -->
+<!--         main = "1st order derivative",  -->
+<!--         ylim = c(-1, 1), lwd = 2, cex.lab = 1.3, cex.axis = 1.3) -->
+<!-- legend("bottomright", inset = 0.01, legend = c("axe 2", "axe 1"), -->
+<!--        col = c(1:5), pch = 15:19, bty = "n",  -->
+<!--        bg = ("white"), horiz = F) -->
+<!-- abline(h = c(-0.2, 0.2), lty = 3, col = "gray50") -->
+
+<!-- #der2 -->
+<!-- matplot(x = as.numeric(colnames(nirs.list.ade4[["der2"]]$NIRS)),  -->
+<!--         y = pca.nirs[["der2"]]$co[, 1:2], type = "l", lty = 1, -->
+<!--         xlab = "Wavelength (nm)",  -->
+<!--         ylab = "Loadings",  -->
+<!--         main = "2nd order derivative",  -->
+<!--         ylim = c(-1, 1), lwd = 2, cex.lab = 1.3, cex.axis = 1.3) -->
+<!-- legend("bottom", inset = 0.01, legend = c("axe 2", "axe 1"), -->
+<!--        col = c(1:5), pch = 15:19, bty = "n",  -->
+<!--        bg = ("white"), horiz = F) -->
+<!-- abline(h = c(-0.2, 0.2), lty = 3, col = "gray50") -->
+<!-- ``` -->
+
+### Plots
+
+<!-- #### Variety -->
+
+<!-- ```{r fig.height=6, fig.width=6} -->
+<!-- couleur <- viridis::turbo(n = length(unique(nirs.list.ade4$imp$info$cépage))) -->
+<!-- # couleur <- hcl.colors(n = length(unique(nirs.list.ade4$imp$info$cépage)), palette = "sunset") -->
+<!-- par(bg = F) -->
+
+<!-- par(bg = "white", mar = c(5, 4, 4, 8), xpd = TRUE) -->
+<!-- for (i in (1:length(pca.nirs))){ -->
+<!--   s.class(dfxy = pca.nirs[[i]]$li, -->
+<!--           fac = as.factor(nirs.list.ade4[[i]]$info$cépage),  -->
+<!--           xax = 1, yax = 2, -->
+<!--           clabel = 0.7,  -->
+<!--           col = couleur,  -->
+<!--           sub = paste(names(pca.nirs)[i], "out", sep = " "),  -->
+<!--           possub="topleft",  -->
+<!--           cpoint = 1.5) -->
+<!-- } -->
+<!-- ``` -->
+
+#### DOY
+
+```{r fig.height=6, fig.width=6}
+couleur <- viridis::viridis(n = length(unique(nirs.list.ade4$imp$info$DateDOY)))
+par(bg = F)
+
+for (i in (1:length(pca.nirs))){
+  s.class(dfxy = pca.nirs[[i]]$li,
+          fac = as.factor(nirs.list.ade4[[i]]$info$DateDOY), 
+          xax = 1, yax = 2,
+          clabel = 0.7, 
+          col = couleur, 
+          sub = paste(names(pca.nirs)[i], "out", sep = " "), 
+          possub="topleft", 
+          cpoint = 1.5)
+}
+```
+
+#### Green vs ripe
+
+```{r fig.height=6, fig.width=6}
+for (i in (1:length(pca.nirs))) {
+  nirs.list.ade4[[i]]$info$veraison[nirs.list.ade4[[i]]$info$veraison == "NV"] <- "G"
+  nirs.list.ade4[[i]]$info$veraison[nirs.list.ade4[[i]]$info$veraison == "V"] <- "R"
+}
+
+couleur <- c("yellowgreen", "gray", "slateblue1")
+par(bg = F)
+for (i in (1:length(pca.nirs))){
+  s.class(dfxy = pca.nirs[[i]]$li,
+          fac = as.factor(nirs.list.ade4[[i]]$info$veraison), 
+          xax = 1, yax = 2,
+          clabel = 0.7, 
+          col = couleur, 
+          sub = paste(names(pca.nirs)[i], "out", sep = " "), 
+          possub="topleft", 
+          cpoint = 1.5)
+}
+```
+
+## PCA HPLC
+
+```{r}
+pca.hplc <- PCA(nirs.hplc[,4:10], ncp=20, graph = F)
+```
+
+```{r}
+fviz_eig(pca.hplc, addlabels = TRUE)
+```
+
+<!-- ### Variety -->
+
+<!-- ```{r fig.height=6, fig.width=6} -->
+<!-- couleur <- viridis::turbo(n = length(unique(nirs.hplc$cépage))) -->
+<!-- par(bg = F) -->
+<!-- s.class( dfxy = pca.hplc$ind$coord, fac = as.factor(nirs.hplc$cépage),  -->
+<!--           xax = 1, yax = 2, -->
+<!--           clabel = 0.7,  -->
+<!--           col = couleur, -->
+<!--           cpoint = 1.5) -->
+<!-- ``` -->
+
+### DOY
+
+```{r fig.height=6, fig.width=6}
+couleur <- viridis::viridis(n = length(unique(nirs.hplc$DateDOY)))
+par(bg = F)
+s.class( dfxy = pca.hplc$ind$coord, fac = as.factor(nirs.hplc$DateDOY), 
+          xax = 1, yax = 2,
+          clabel = 0.7, 
+          col = couleur,
+          cpoint = 1.5)
+```
+
+### Green vs ripe
+
+```{r fig.height=6, fig.width=6}
+nirs.hplc$veraison[nirs.hplc$veraison == "NV"] <- "G"
+nirs.hplc$veraison[nirs.hplc$veraison == "V"] <- "R"
+
+couleur <- c("yellowgreen", "gray", "slateblue1")
+par(bg = F)
+s.class( dfxy = pca.hplc$ind$coord, fac = as.factor(nirs.hplc$veraison), 
+          xax = 1, yax = 2,
+          clabel = 0.7, 
+          col = couleur,
+          cpoint = 1.5)
+```
+
+### Loadings
+
+```{r}
+# Renommer les variables
+rownames(pca.hplc$var$coord) <- c("malate", 
+                                  "tartrate", 
+                                  "glucose", 
+                                  "fructose", 
+                                  "shikimate", 
+                                  "sum_GF", 
+                                  "ratio_GF")
+
+# Visualiser la PCA
+fviz_pca_var(pca.hplc, col.var = "contrib", 
+             gradient.cols = c("#00AFBB", "#E7B800", "#D41C1C"),
+             repel = TRUE, labelsize = 4, ggtheme = theme_minimal() +
+               theme(
+                 axis.title = element_text(size = 14),
+                 axis.text = element_text(size = 12),
+                 plot.title = element_text(size = 16, face = "bold"),
+                 legend.title = element_text(size = 14),
+                 legend.text = element_text(size = 12)))
+```
+
+```{r}
+rm(nirs.list.ade4, pca.nirs, pca.hplc, couleur, i)
+```
+
+# PLSDA for identification green vs ripe
+
+## Calibrations on the whole dataset (cross-validations)
+
+```{r message=FALSE, warning=FALSE}
+# calib plsda nirs.sub cv
+datOk <- lapply(nirs.list, function(x) subset(x, ! is.na(veraison)))
+segm <- segmkf(n = nrow(datOk$imp), K = 4, type = "random", nrep = 25)
+pars <- mpars(prior = "prop")
+plsda.veraison <- lapply(datOk, function(x){
+  gridcvlv(x$NIRS,
+           x$veraison,
+           fun = plslda,
+           nlv = 1:20,
+           segm = segm,
+           pars = pars,
+           score = err)
+})
+```
+
+```{r fig.height = 4, fig.width = 5}
+# matplot plsda err nirs.sub
+error.plsda.veraison <- sapply(plsda.veraison, function(x) {x$val$y1})
+matplot(error.plsda.veraison, type = "l", lty = 1, 
+        col = c("#30123BFF", "#3E9BFEFF", "#46F884FF", "#E1DD37FF", "#F05B12FF", "#7A0403FF"),
+        xlab = "nLV", ylab = "CV.error",
+        main = "veraison status (cv)",
+        ylim = c(0, 0.3), cex.lab = 1.3, cex.axis = 1.3)
+legend("topright", legend = colnames(error.plsda.veraison), lty = 1, 
+       col = c("#30123BFF", "#3E9BFEFF", "#46F884FF", "#E1DD37FF", "#F05B12FF", "#7A0403FF"), 
+       bty = "n", cex = 0.8)
+abline(h = 0.05, lty = 3)
+```
+
+## Calibrations on the trainning set (cross-val)
+
+```{r message=FALSE, warning=FALSE}
+# calib plsda nirs.sub training set cv
+datOk.cal <- lapply(nirs.list, function(x) subset(x, ! is.na(veraison) & calib == "calib"))
+segm <- segmkf(n = nrow(datOk.cal$imp), K = 4, type = "random", nrep = 25)
+pars <- mpars(prior = "prop")
+plsda.veraison <- lapply(datOk.cal, function(x){
+  gridcvlv(x$NIRS,
+           x$veraison,
+           fun = plslda,
+           nlv = 1:20,
+           segm = segm,
+           pars = pars,
+           score = err)
+})
+```
+
+```{r fig.height = 4, fig.width = 5}
+# matplot plsda err nirs.sub training set
+error.plsda.cal.veraison <- sapply(plsda.veraison, function(x) {x$val$y1})
+matplot(error.plsda.cal.veraison, type = "l", lty = 1,
+        col = c("#30123BFF", "#3E9BFEFF", "#46F884FF", "#E1DD37FF", "#F05B12FF", "#7A0403FF"),
+        xlab = "nLV", ylab = "CV.error",
+        main = "veraison status (cv) - training set",
+        ylim = c(0, 0.3), cex.lab = 1.3, cex.axis = 1.3)
+legend("topright", legend = colnames(error.plsda.cal.veraison), lty = 1, 
+       col = c("#30123BFF", "#3E9BFEFF", "#46F884FF", "#E1DD37FF", "#F05B12FF", "#7A0403FF"), 
+       bty = "n", cex = 0.8)
+abline(h = 0.05, lty = 3)
+```
+
+## Prediction in the validation set
+
+```{r}
+# predict nirs.sub
+LV = 9
+pretr = "imp"
+mod <- plslda(X = datOk.cal[[pretr]]$NIRS, y = datOk.cal[[pretr]]$veraison, nlv = LV, prior = "prop")
+datVal <- subset(nirs.list[[pretr]], ! is.na(veraison) & calib == "valid")
+prediction <- predict(mod, datVal$NIRS)
+output <- data.frame(datVal[, c(1:4)], "obs" = datVal$veraison, prediction$pred, prediction$posterior)
+colnames(output)[6] <- "pred"
+```
+
+```{r}
+table(output[, c("obs", "pred")])
+sum(diag(table(output[, c("obs", "pred")]))) / nrow(output)
+```
+
+2 samples are not well predicted (pred NV but are V) :
+
+```{r}
+subset(output, obs == "V" & pred == "NV")
+# subset(datVal, echantillon %in% rownames(subset(output, obs == "V" & pred == "NV")))[, 1:7]
+output.PLSDA <- output
+mod_plsda <- mod
+```
+
+```{r echo=FALSE}
+rm(
+  datOk,
+  datVal,
+  segm,
+  pars,
+  plsda.veraison,
+  error.plsda.veraison,
+  datOk.cal,
+  error.plsda.cal.veraison,
+  LV,
+  pretr,
+  mod,
+  prediction,
+  output
+)
+```
+
+# Plot model without outliers
+
+## Loading function and data
+
+```{r}
+# Function
+source("G:/Mon Drive/Thèse MétabEAU/Axe 1 - NIRS/Pred_modele_Elias/predictions/calibSPIR.R")
+
+# Dataset
+load("D:/Mes Donnees/Doctorat/Axe 1 - NIRS/Model_final_propre_OK/Valid-Train_Dataset_CalibNIRS_2021-2022.Rdata") #nirs.list.valid.ok et nirs.list.train
+load("D:/Mes Donnees/Doctorat/Axe 1 - NIRS/Model_final_propre_OK/output_cal_pred_MicroNIR_KS_noout.Rdata")
+
+trait.ids <- c("glucose", "fructose", "somme_GF", "rapport_GF", "malate", "tartrate", "shikimate", "rapport_MT", "poids_baie")
+```
+
+Number of berries per year for the different data sets:
+
+```{r message=FALSE, warning=FALSE}
+# Trainning list
+ggplot(nirs.list.train$imp, aes(x = millesime)) +
+  geom_bar(fill = "steelblue", width = 0.6) +
+  labs(x = "Year", 
+       y = "Count", 
+       title = "Training list") +
+  ylim(0, 600) +
+  # scale_y_continuous(breaks = seq(0, 600, by = 100)) +
+  theme_minimal() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        plot.title = element_text(size = 16, face = "bold")) +
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.5, size = 5)
+```
+
+```{r message=FALSE, warning=FALSE}
+# Validation list
+ggplot(nirs.list.valid.ok$imp, aes(x = millesime)) +
+  geom_bar(fill = "steelblue", width = 0.6) +
+  labs(x = "Year", 
+       y = "Count", 
+       title = "Validation list") +
+  ylim(0, 600) +
+  # scale_y_continuous(breaks = seq(0, 600, by = 100)) +
+  theme_minimal() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        plot.title = element_text(size = 16, face = "bold")) +
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.5, size = 5)
+```
+
+## Model plot for each trait
+
+### Coloured by DOY
+
+```{r fig.height=6, fig.width=12}
+# plot_list <- NULL
+valid.output <- NULL
+for (i in trait.ids) {
+  # Df prep
+  ## model
+  datCal <- lapply(nirs.list.train, function(x){
+    droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", i, "NIRS")]))})
+  
+  datCal.noout <- subset(datCal[[mod.bestpretr.noout[[i]][[2]]]], 
+                         ! echantillon %in% 
+                           outliers.KS[[i]][[mod.bestpretr.noout[[i]][[2]]]])
+  
+  df <- cbind(datCal.noout[, c("echantillon", "DateDOY", "cépage", i)],
+                       "pred" = as.vector(mod.bestpretr.noout[[i]][[1]]$predicted))
+  colnames(df) <- c("echantillon", "DateDOY", "cépage", "trait", "pred")
+  
+  ## valid
+  datVal <- lapply(nirs.list.valid.ok, function(x) {
+    droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", i, "NIRS")]))
+    })
+  
+  df_val <- datVal[[mod.bestpretr.noout[[i]][[2]]]]
+  
+  df_val$pred <- drop(
+    predict(mod.bestpretr.noout[[i]][[1]]$model, 
+            ncomp = as.vector(mod.bestpretr.noout[[i]][[1]]$output[1]), 
+            newdata = df_val$NIRS))
+  
+  colnames(df_val) <- c("echantillon", "DateDOY", "cépage", "trait", "NIRS", "pred")
+  
+  valid.out <- stat_pred(dataSet = df_val, obs = "trait", pred = "pred")
+  
+  # Plot 1: cv
+  plot1 <- ggplot(df, aes(x = trait, y = pred)) +
+    geom_point(aes(color = as.factor(DateDOY)), size = 2) +
+    scale_color_viridis(discrete = T) +
+    labs(x = "observed", y = "predicted", title = paste(i, "(cv)", sep = " "), color = "DOY") +
+    theme_minimal() +
+    geom_abline(intercept = 0, slope = 1) + 
+    # annotate("text", 
+    #          x = min(df$trait), 
+    #          y = max(df$pred), 
+    #          label = paste(
+    #            paste0("nb_comp = ", round(mod.bestpretr.noout[[i]][[3]][5], 0)),
+    #            paste0("R2_cv = ", round(mod.bestpretr.noout[[i]][[3]][7], 2)),
+    #            paste0("RMSE_cv = ", round(mod.bestpretr.noout[[i]][[3]][9], 2)),
+    #            paste0("pretr = ", mod.bestpretr.noout[[i]][[3]][2]),
+    #            paste0("nobs = ", mod.bestpretr.noout[[i]][[3]]$n), sep = "\n"), 
+    #          size = 5, hjust = 0, vjust = 1) +
+    theme(axis.title.x = element_text(size = 24),
+          axis.title.y = element_text(size = 24),
+          axis.text.x = element_text(size = 22, angle = 45, hjust = 1),
+          axis.text.y = element_text(size = 22),
+          legend.text = element_text(size = 22), 
+          legend.title = element_text(size = 24),
+          plot.title = element_text(size = 26))
+  
+  # Plot 2: val
+  plot2 <- ggplot(data = df_val, aes(x = trait, y = pred)) +
+    geom_point(shape = 21, fill = "gray", size = 2) +
+    labs(x = "observed", y = "predicted", title = paste(i, "(val)", sep = " ")) +
+    theme_minimal(base_size = 14) +
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", size = 1, color = "black") +
+    geom_abline(intercept = coef(valid.out$modlin)[1], 
+                slope = coef(valid.out$modlin)[2], 
+                linetype = "solid", size = 1, color = "black") +
+    # annotate("text", 
+    #          x = min(df_val$trait), 
+    #          y = max(df_val$pred), 
+    #          label = paste(
+    #            paste("R2_val =", round(valid.out$output[2], 2)),
+    #            paste("RMSE_val =", round(valid.out$output[3], 2)),
+    #            paste("nobs =", valid.out$output[5]), sep = "\n"), 
+    #          size = 5, hjust = 0, vjust = 1) +
+    theme(axis.title.x = element_text(size = 24),
+          axis.title.y = element_text(size = 24),
+          axis.text.x = element_text(size = 22, angle = 45, hjust = 1),
+          axis.text.y = element_text(size = 22),
+          legend.text = element_text(size = 22), 
+          legend.title = element_text(size = 24),
+          plot.title = element_text(size = 26))
+  
+  # Panel plots
+  # plot <- 
+    grid.arrange(plot1, plot2, ncol = 2)
+  # print(plot)
+  
+  #save valid.out
+  valid.output[[i]] <- valid.out$output
+  # plot_list[[i]] <- plot
+}
+```
+
+```{r eval=FALSE}
+# Valid.df
+valid.df <- do.call(rbind, valid.output)
+
+# Save
+setwd("D:/Mes Donnees/Doctorat/Axe 1 - NIRS/Model_final_propre_OK/Datasets")
+write.csv2(valid.df, file = "perf_plsr_valid-ext.csv")
+```
+
+### Coloured by variety
+
+```{r fig.height=6, fig.width=12}
+# plot_list <- NULL
+valid.output <- NULL
+for (i in trait.ids) {
+  # Df prep
+  ## model
+  datCal <- lapply(nirs.list.train, function(x){
+    droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", i, "NIRS")]))})
+  
+  datCal.noout <- subset(datCal[[mod.bestpretr.noout[[i]][[2]]]], 
+                         ! echantillon %in% 
+                           outliers.KS[[i]][[mod.bestpretr.noout[[i]][[2]]]])
+  
+  datCal.noout$cépage[datCal.noout$cépage %in% c("syrahsol", "syrah pot")] <- "syrah"
+  
+  df <- cbind(datCal.noout[, c("echantillon", "DateDOY", "cépage", i)],
+                       "pred" = as.vector(mod.bestpretr.noout[[i]][[1]]$predicted))
+  colnames(df) <- c("echantillon", "DateDOY", "cépage", "trait", "pred")
+  
+  ## valid
+  datVal <- lapply(nirs.list.valid.ok, function(x) {
+    droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", i, "NIRS")]))
+    })
+  
+  df_val <- datVal[[mod.bestpretr.noout[[i]][[2]]]]
+  
+  df_val$pred <- drop(
+    predict(mod.bestpretr.noout[[i]][[1]]$model, 
+            ncomp = as.vector(mod.bestpretr.noout[[i]][[1]]$output[1]), 
+            newdata = df_val$NIRS))
+  
+  colnames(df_val) <- c("echantillon", "DateDOY", "cépage", "trait", "NIRS", "pred")
+  
+  valid.out <- stat_pred(dataSet = df_val, obs = "trait", pred = "pred")
+  
+  # Plot 1: cv
+  plot1 <- ggplot(df, aes(x = trait, y = pred)) +
+    geom_point(aes(color = as.factor(cépage)), size = 2) +
+    scale_color_viridis_d(option = "turbo") +
+    labs(x = "observed", y = "predicted", title = paste(i, "(cv)", sep = " "), color = "DOY") +
+    theme_minimal() +
+    geom_abline(intercept = 0, slope = 1) + 
+    # annotate("text", 
+    #          x = min(df$trait), 
+    #          y = max(df$pred), 
+    #          label = paste(
+    #            paste0("nb_comp = ", round(mod.bestpretr.noout[[i]][[3]][5], 0)),
+    #            paste0("R2_cv = ", round(mod.bestpretr.noout[[i]][[3]][7], 2)),
+    #            paste0("RMSE_cv = ", round(mod.bestpretr.noout[[i]][[3]][9], 2)),
+    #            paste0("pretr = ", mod.bestpretr.noout[[i]][[3]][2]),
+    #            paste0("nobs = ", mod.bestpretr.noout[[i]][[3]]$n), sep = "\n"), 
+    #          size = 5, hjust = 0, vjust = 1) +
+    theme(axis.title.x = element_text(size = 24),
+          axis.title.y = element_text(size = 24),
+          axis.text.x = element_text(size = 22, angle = 45, hjust = 1),
+          axis.text.y = element_text(size = 22),
+          legend.text = element_text(size = 22), 
+          legend.title = element_text(size = 24),
+          plot.title = element_text(size = 26))
+  
+  # Plot 2: val
+  plot2 <- ggplot(data = df_val, aes(x = trait, y = pred)) +
+    geom_point(shape = 21, fill = "gray", size = 2) +
+    labs(x = "observed", y = "predicted", title = paste(i, "(val)", sep = " ")) +
+    theme_minimal(base_size = 14) +
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", size = 1, color = "black") +
+    geom_abline(intercept = coef(valid.out$modlin)[1], 
+                slope = coef(valid.out$modlin)[2], 
+                linetype = "solid", size = 1, color = "black") +
+    # annotate("text", 
+    #          x = min(df_val$trait), 
+    #          y = max(df_val$pred), 
+    #          label = paste(
+    #            paste("R2_val =", round(valid.out$output[2], 2)),
+    #            paste("RMSE_val =", round(valid.out$output[3], 2)),
+    #            paste("nobs =", valid.out$output[5]), sep = "\n"), 
+    #          size = 5, hjust = 0, vjust = 1) +
+    theme(axis.title.x = element_text(size = 24),
+          axis.title.y = element_text(size = 24),
+          axis.text.x = element_text(size = 22, angle = 45, hjust = 1),
+          axis.text.y = element_text(size = 22),
+          legend.text = element_text(size = 22), 
+          legend.title = element_text(size = 24),
+          plot.title = element_text(size = 26))
+  
+  # Panel plots
+  # plot <- 
+    grid.arrange(plot1, plot2, ncol = 2)
+  # print(plot)
+  
+  #save valid.out
+  valid.output[[i]] <- valid.out$output
+  # plot_list[[i]] <- plot
+}
+```
+
+```{r}
+#cleaning
+rm(datCal, datCal.noout, datVal, i, valid.out, trait_clean, predicted_clean, col.doy)
+```
+
+## Plot coef PLSR vs wavelengths
+
+```{r}
+mod <- mod.bestpretr.noout
+names(mod) <- c("Glucose", "Fructose", "Sugars", "G/F", "Malic acid", "Tartaric acid", "Shikimic acid", "M/T", "Berry mass")
+```
+
+```{r fig.width=5, fig.height=4}
+for (i in names(mod)) {
+  # Data
+  coeff <- 
+    as.data.frame(mod[[i]][[1]]$model$coefficients)
+  
+  coeff$NIRS <- as.numeric(rownames(coeff))
+  
+  coeff <- 
+    coeff[, c(21, mod[[i]][[3]]$nb.comp)]
+  # Plot
+  plot <- 
+    ggplot(coeff, aes(x = NIRS, y = get(colnames(coeff[2])))) +
+    geom_line(col = "blue") + theme_minimal() +
+    theme(axis.text.x = element_text(size = 12),
+          axis.text.y = element_text(size = 12), 
+          axis.title.x = element_text(size = 14), 
+          axis.title.y = element_text(size = 14),
+          plot.title = element_text(size = 16, face = "bold", hjust = 0.5), 
+          plot.margin = margin(10, 15, 10, 10)) +
+    labs(title = i, 
+         x = "Wavelength (nm)", 
+         y = "Regression coefs") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray18")
+  
+  print(plot)
+}
+```
+
+## Mean values of traits in berries ("G" and "R")
+
+```{r}
+# Subset
+green <- subset(nirs.hplc, nirs.hplc$veraison == "G")
+ripe <- subset(nirs.hplc, nirs.hplc$veraison == "R")
+```
+
+```{r eval=FALSE}
+# Calcul
+traits <- colnames(nirs.hplc[, c(4:11, 15)])
+for (i in traits) {
+  for (j in c("green", "ripe")) {
+    print(paste("Mean", i, "for", j, "berries", sep = " "))
+    print(mean(get(j)[, i]))
+  }
+}
+```
+
+```{r}
+print("Before veraison berries informations for each trait")
+summary(green[, c(4:11, 15)])
+
+print("After veraison berries informations for each trait")
+summary(ripe[, c(4:11, 15)])
+```
+
+```{r echo=FALSE}
+rm(i, mod, coeff, plot, green, ripe)
+```
+
+# PLSR: prediction of the monitoring without sampling
+
+## Loading data
+
+```{r}
+# nirs.df.ok: monitoring 2021 + 2022 without calib
+load("D:/Mes Donnees/Doctorat/Axe 1 - NIRS/Pred_modele_Elias/predictions/Suivi_2021-2022.RData")
+```
+
+Count berries per year:
+
+```{r message=FALSE, warning=FALSE}
+# Extract year
+nirs.df.ok$millesime <- format(as.Date(nirs.df.ok$date_sp, format = "%Y-%m-%d"), "%Y")
+
+# Plot
+ggplot(nirs.df.ok, aes(x = millesime)) +
+  geom_bar(fill = "steelblue", width = 0.6) +
+  labs(x = "Year", 
+       y = "Count", 
+       title = "") +
+  ylim(0, 3000) +
+  # scale_y_continuous(breaks = seq(0, 600, by = 100)) +
+  theme_minimal() +
+  theme(axis.title.x = element_text(size = 14),
+        axis.title.y = element_text(size = 14),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        plot.title = element_text(size = 16, face = "bold")) +
+  geom_text(stat = "count", aes(label = ..count..), vjust = -0.5, size = 5)
+```
+
+
+## Pretreatment of monitoring spectra
+
+```{r nirs.list.full}
+# Imputation spectres
+nirs.imp <- nirs.df.ok
+nirs.imp$NIRS <- t(apply(nirs.df.ok$NIRS, 1, function(x) {
+  x[is.na(x)] <- max(x, na.rm = TRUE)
+  return(x)
+}))
+
+# SNV
+nirs.snv <- nirs.imp
+nirs.snv$NIRS <- t(scale(t(nirs.imp$NIRS)))
+
+# SNV no scale
+nirs.snv.cent <- nirs.imp
+nirs.snv.cent$NIRS <- t(scale(t(nirs.imp$NIRS), center = T, scale = F))
+
+# Detrend
+nirs.dt <- nirs.imp
+nirs.dt$NIRS <- detrend(X = nirs.imp$NIRS)
+
+# Dérivée
+tsf <- (max(as.numeric(colnames(nirs.snv$NIRS))) - min(as.numeric(colnames(nirs.snv$NIRS)))) /
+  (length(as.numeric(colnames(nirs.snv$NIRS))) - 1)
+
+# Der1
+nirs.der1 <- nirs.snv
+nirs.der1$NIRS <- t(apply(nirs.snv$NIRS, 1, function(x) {sgolayfilt(x, p = 2, n = 11, m = 1, ts = tsf)}))
+colnames(nirs.der1$NIRS) <- colnames(nirs.snv$NIRS)
+# Der2
+nirs.der2 <- nirs.snv
+nirs.der2$NIRS <- t(apply(nirs.snv$NIRS, 1, function(x) {sgolayfilt(x, p = 3, n = 21, m = 2, ts = tsf)}))
+colnames(nirs.der2$NIRS) <- colnames(nirs.snv$NIRS)
+
+# nirs.list.all
+nirs.list.monit <- list("imp" = nirs.imp, "snv" = nirs.snv, "snv.cent" = nirs.snv.cent, "dt" = nirs.dt, "der1" = nirs.der1, "der2" = nirs.der2)
+
+# Cleaning
+rm(nirs.imp, nirs.dt, nirs.snv, nirs.der1, nirs.der2, nirs.snv.cent, tsf)
+```
+
+## Prediction
+
+```{r}
+# Prediction
+output <- list()
+for (i in names(mod.bestpretr.noout)) {
+  output[[i]] <- predict(mod.bestpretr.noout[[i]][[1]]$model,
+                                    newdata =  nirs.list.monit[[mod.bestpretr.noout[[i]][[2]]]])[,,mod.bestpretr.noout[[i]][[3]]$nb.comp]}
+
+# Put data in a df
+pred.df <- do.call(rbind, output)
+pred.df <- as.data.frame(t(pred.df))
+
+# Col NirsID
+pred.df$NirsID <- rownames(pred.df)
+pred.df <- pred.df %>% relocate(NirsID, .before = glucose)
+rownames(pred.df) <- 1:nrow(pred.df)
+
+rm(output)
+```
+
+### Pairs panel
+
+```{r fig.height=10, fig.width=10, eval=FALSE}
+pairs.panels(x = pred.df[, trait.ids],
+             pch = 21, hist.col = "grey", main = "Predictions without outliers")
+```
+
+### Data normalization
+
+```{r}
+# Data frame
+pred.info <- data.frame("NirsID" = pred.df$NirsID)
+
+# Split colnames
+pred.info$geno <- sapply(strsplit(pred.info$NirsID, split = "-"), function(x) x[1])
+pred.info$grappe <- sapply(strsplit(pred.info$NirsID, split = "-"), function(x) x[2])
+pred.info$baie <- sapply(strsplit(pred.info$NirsID, split = "-"), function(x) x[3])
+pred.info$doy <- sapply(strsplit(pred.info$NirsID, split = "-"), function(x) x[4])
+
+# New ID per berry
+pred.info$grappebaie <- paste(pred.info$grappe, pred.info$baie, sep = "-")
+head(pred.info)
+
+# Add genotypes
+# nirs.df.okok <- nirs.df.ok %>% rename(NirsID = nirsIdOK)
+pred.info <- merge(pred.info, nirs.df.ok, by = "NirsID")
+# pred.info <- pred.info[, -c(8:14, 16:17)]
+# pred.info$genoID <- paste(pred.info$Genotype, pred.info$grappe, pred.info$baie, sep = "-")
+
+# Data frame infos individals + predictions
+pred.ok.noout <- merge(pred.info, pred.df, by = "NirsID")
+```
+
+```{r}
+rm(pred.info, pred.df)
+```
+
+```{r}
+# Normalization
+pred.norm.noout <- normalize(pred.ok.noout)
+b <- subset(pred.norm.noout, pred.norm.noout$shikimate > 0.2)
+pred.norm.noout$NirsID[which(pred.norm.noout$shikimate < 0.2)]
+```
+
+```{r fig.height=10, fig.width=10, eval=FALSE}
+# Plots
+pairs.panels(x = pred.norm.noout[, trait.ids],
+             pch = 21, hist.col = "grey", main = "Predictions detecting and deleting outliers")
+
+pairs.panels(x = b[, trait.ids],
+             pch = 21, hist.col = "grey", main = "Predictions detecting and deleting outliers - OK")
+```
+
+### Berry selection
+
+We select berries with a monitoring from the first to last DOY.
+
+```{r Selection baies avec toutes les dates}
+baies9dates <- names(which(table(pred.norm.noout$genoID) >= 9))
+pred.norm.noout$doy <- as.factor(pred.norm.noout$doy)
+```
+
+### Kinetics plots
+
+```{r}
+genot <- unique(pred.norm.noout$geno)
+pred.ok.noout$grappebaie <- as.factor(pred.ok.noout$grappebaie)
+pred.ok.noout <- pred.ok.noout[, -15]
+
+# Glucose + fructose pred
+pred.ok.noout$sum.Gpred.Fpred <- apply(pred.ok.noout[, c("glucose", "fructose")], 1, sum)
+```
+
+#### G+F HPLC model
+
+Model involving only the sum of glucose and fructose determined by HPLC.
+
+```{r graph poster, eval=TRUE, fig.height=8,fig.width=6}
+for (i in genot) {
+  cep <- subset(pred.ok.noout, pred.ok.noout$geno == i)
+  b9dat <- names(which(table(cep$genoID) >= 9))
+  dat <- subset(cep, genoID %in% b9dat & doy != 200)
+  
+  # GF
+  couleur <- viridis(n = length(b9dat))
+  
+  par(mar = c(2, 4.5, 4, 2.5), fig = c(0, 1, 0.45, 1))
+  
+  plot(somme_GF ~ doy, data = subset(dat, genoID == b9dat[1]),
+       pch = 19, col = couleur[1], axes = F,
+       cex = 2, ylim = c(0, 3000), xlab = "", ylab = "Sugars",
+       main = unique(dat$geno), cex.lab = 2, cex.main = 2.5)
+  axis(side = 2, cex.axis = 2, lwd = 2)
+  
+  for (j in 2:length(b9dat)) {
+    par(new = TRUE)
+    plot(somme_GF ~ doy, data = subset(dat, genoID == b9dat[j]),
+       pch = 19, col = couleur[j], axes = F,
+       cex = 2, ylim = c(0, 3000),
+       xaxt = "n", yaxt = "n", main = "", xlab = "", ylab = "")}
+  
+  # malate
+  couleur <- magma(n = length(b9dat))
+  
+  par(new = TRUE, fig = c(0, 1, 0, 0.45), mar = c(4.5, 4.5, 0, 2.5))
+  
+  plot(malate ~ doy, data = subset(dat, genoID == b9dat[1]),
+       pch = 19, col = couleur[1],  axes = F, ylab = "Malic acid", xlab = "DOY",
+       cex = 2, ylim = c(0, 600),
+       main = "", cex.lab = 2)
+  axis(side = 1, cex.axis = 2, lwd = 2)
+  axis(side = 2, cex.axis = 2, lwd = 2)
+  
+  for (j in 2:length(b9dat)) {
+    par(new = TRUE)
+    plot(malate ~ doy, data = subset(dat, genoID == b9dat[j]),
+       pch = 19, col = couleur[j], axes = F,
+       cex = 2, ylim = c(0, 600),
+       xaxt = "n", yaxt = "n", main = "", xlab = "", ylab = "")}
+}
+```
+
+# Sugar_cal
+
+Addition test of glucose and fructose predictions after prediction of each trait.
+
+## 1. Collect glucose and fructose data obs
+
+```{r}
+gf <- c("glucose", "fructose")
+gf_list <- NULL
+
+#datCal prep
+datCal <- lapply(nirs.list.train, function(x) {
+  droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", gf, "NIRS")]))
+  })
+  
+#gf_list prep
+for (i in gf) {
+  gf_list[[i]] <- subset(datCal[[mod.bestpretr.noout[[i]][[2]]]], !echantillon %in%
+                                outliers.KS[[i]][[mod.bestpretr.noout[[i]][[2]]]])
+  gf_list[[i]]$DateDOY <- as.factor(gf_list[[i]]$DateDOY)
+}
+```
+
+## 2. Sugar_cal_obs = G+F obs
+
+```{r}
+gf_list[["sugar_cal"]] <- NULL
+
+# Add obs sugars (G, F)
+gf_list[["sugar_cal"]] <- data.frame(gf_list[["glucose"]][, c("echantillon", 
+                                                              "DateDOY", 
+                                                              "cépage",
+                                                              "glucose",
+                                                              "fructose")])
+
+# Sum G + F obs
+gf_list[["sugar_cal"]]$sugar_cal_obs <- 
+  gf_list[["sugar_cal"]]$glucose + 
+  gf_list[["sugar_cal"]]$fructose
+```
+
+### 3. Drop outliers for glucose and fructose and keep the same samples
+
+Between the predictions for glucose and fructose, there are not the same number of samples, so we need to keep only those in common between the two to be able to add them up.
+
+```{r}
+# Drop outliers gf_list
+out <- unique(outliers.KS[["glucose"]][[mod.bestpretr.noout[["glucose"]][[2]]]], 
+              outliers.KS[["fructose"]][[mod.bestpretr.noout[["fructose"]][[2]]]])
+
+# Drop outliers pred
+glucose_pred <- as.data.frame(mod.bestpretr.noout[["glucose"]][[1]]$predicted)
+glucose_pred$echantillon <- gf_list[["glucose"]]$echantillon
+colnames(glucose_pred) <- c("glucose_pred", "echantillon")
+
+fructose_pred <- as.data.frame(mod.bestpretr.noout[["fructose"]][[1]]$predicted)
+fructose_pred$echantillon <- gf_list[["fructose"]]$echantillon
+colnames(fructose_pred) <- c("fructose_pred", "echantillon")
+
+# Keep common samples gf_list
+samp_ok <- glucose_pred$echantillon[which(glucose_pred$echantillon %in% fructose_pred$echantillon)]
+gf_list[["sugar_cal"]] <- subset(gf_list[["sugar_cal"]], echantillon %in% samp_ok)
+```
+
+### 4. Sugar_cal_pred = G pred + G pred
+
+```{r include=FALSE}
+# Prep glucose and fructose pred
+glucose_pred <- subset(glucose_pred, echantillon %in% samp_ok)
+fructose_pred <- subset(fructose_pred, echantillon %in% samp_ok)
+
+gf_list[["sugar_cal"]]$sugar_cal_pred <- glucose_pred$glucose_pred + fructose_pred$fructose_pred
+```
+
+### 5. Validation set pred
+
+```{r}
+#datVal prep
+datVal <- lapply(nirs.list.valid.ok, function(x) {
+  droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", gf, "NIRS")]))
+})
+
+#Valid Glucose
+i=gf[1]
+##Ped
+datVal[[mod.bestpretr.noout[[i]][[2]]]]$pred <-
+  drop(predict(
+    mod.bestpretr.noout[[i]][[1]]$model,
+    ncomp = as.vector(mod.bestpretr.noout[[i]][[1]]$output[1]),
+    newdata = datVal[[mod.bestpretr.noout[[i]][[2]]]]$NIRS))
+
+#Valid Fructose
+j=gf[2]
+##Ped
+datVal[[mod.bestpretr.noout[[j]][[2]]]]$pred <-
+  drop(predict(
+    mod.bestpretr.noout[[j]][[1]]$model,
+    ncomp = as.vector(mod.bestpretr.noout[[j]][[1]]$output[1]),
+    newdata = datVal[[mod.bestpretr.noout[[j]][[2]]]]$NIRS))
+```
+
+```{r}
+##datVal sugar_cal
+datVal[["sugar_cal"]] <- datVal[["snv.cent"]][, c("echantillon", "DateDOY", "cépage", "glucose", "fructose", "NIRS")]
+
+datVal[["sugar_cal"]]$sugar_cal_obs <- 
+  datVal[["sugar_cal"]]$glucose + datVal[["sugar_cal"]]$fructose
+
+datVal[["sugar_cal"]]$sugar_cal_pred <- 
+  datVal[["snv"]]$pred + datVal[["snv.cent"]]$pred
+
+valid.out_sugar_cal <- stat_pred(dataSet = datVal[["sugar_cal"]], 
+                       obs = "sugar_cal_obs", 
+                       pred = "sugar_cal_pred")
+```
+
+```{r}
+pred_sugar_cal_allB <- datVal[["sugar_cal"]]
+pred_sugar_cal_allB$calib <- "valid"
+
+gf_cal <- gf_list[["sugar_cal"]]
+gf_cal$calib <- "train"
+```
+
+### 6. Plots mod + val sugar-cal vs somme_GF
+
+#### Sugar_cal: 
+
+```{r}
+# Plot 1: Sugar_cal (cv)
+plot1 <- ggplot(gf_list[["sugar_cal"]], aes(x = sugar_cal_obs, y = sugar_cal_pred)) +
+  geom_point(aes(color = as.factor(DateDOY)), size = 2) +
+  scale_color_viridis(discrete = T) +
+  labs(x = "observed", y = "predicted", title = "Sugar_cal (cv)", color = "DOY") +
+  theme_minimal() +
+  geom_abline(intercept = 0, slope = 1) + 
+  annotate("text", 
+           x = min(gf_list[["sugar_cal"]]$sugar_cal_obs), 
+           y = max(gf_list[["sugar_cal"]]$sugar_cal_pred),
+           label = paste(paste("nobs =", nrow(gf_list[["sugar_cal"]])), sep = "\n"), 
+           size = 5, hjust = 0, vjust = 1) + 
+  theme(axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        legend.text = element_text(size = 14), 
+        legend.title = element_text(size = 16),
+        plot.title = element_text(size = 18))
+```
+
+```{r}
+# Plot 2: Sugar_cal (val)
+plot2 <- ggplot(data = datVal[["sugar_cal"]], aes(x = sugar_cal_obs, y = sugar_cal_pred)) +
+  geom_point(shape = 21, fill = "gray", size = 2) +
+  labs(x = "obs", y = "pred", title = "Sugar_cal (val)") +
+  theme_minimal() +
+  geom_abline(intercept = 0, 
+              slope = 1, 
+              linetype = "dashed", 
+              size = 1) +
+  geom_abline(intercept = coef(valid.out_sugar_cal$modlin)[1], 
+              slope = coef(valid.out_sugar_cal$modlin)[2], 
+              linetype = "solid", 
+              size = 1) +
+  annotate("text", 
+           x = min(datVal[["sugar_cal"]]$sugar_cal_obs), 
+           y = max(datVal[["sugar_cal"]]$sugar_cal_pred),
+           label = paste(
+             paste("R2_val =", round(valid.out_sugar_cal$output[2], 2)),
+             paste("RMSE_val =", round(valid.out_sugar_cal$output[3], 2)),
+             paste("nobs =", valid.out_sugar_cal$output[5]), sep = "\n"), 
+           size = 5, hjust = 0, vjust = 1) + 
+  theme(axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        legend.text = element_text(size = 14), 
+        legend.title = element_text(size = 16),
+        plot.title = element_text(size = 18))
+```
+
+#### somme_GF model:
+
+```{r}
+i = "somme_GF"
+# Df prep
+## model
+datCal <- lapply(nirs.list.train, function(x){
+  droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", i, "NIRS")]))})
+
+datCal.noout <- subset(datCal[[mod.bestpretr.noout[[i]][[2]]]], 
+                       ! echantillon %in% 
+                         outliers.KS[[i]][[mod.bestpretr.noout[[i]][[2]]]])
+
+somme_GF_df <- cbind(datCal.noout[, c("echantillon", "DateDOY", "cépage", "somme_GF")],
+                     "pred" = as.vector(mod.bestpretr.noout[[i]][[1]]$predicted))
+```
+
+```{r}
+## valid
+datVal_sumGF <- lapply(nirs.list.valid.ok, function(x) {
+  droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", i, "NIRS")]))
+})
+
+datVal_sumGF[[mod.bestpretr.noout[[i]][[2]]]]$pred <- drop(
+  predict(mod.bestpretr.noout[[i]][[1]]$model, 
+          ncomp = as.vector(mod.bestpretr.noout[[i]][[1]]$output[1]), 
+          newdata = datVal_sumGF[[mod.bestpretr.noout[[i]][[2]]]]$NIRS))
+
+valid.out_sumGF <- stat_pred(dataSet = datVal_sumGF[[mod.bestpretr.noout[[i]][[2]]]], obs = i, pred = "pred")
+```
+
+```{r}
+# Plot 3: somme_GF (cv)
+plot3 <- ggplot(somme_GF_df, aes(x = somme_GF, y = pred)) +
+  geom_point(aes(color = as.factor(DateDOY)), size = 2) +
+  scale_color_viridis(discrete = T) +
+  labs(x = "observed", y = "predicted", title = "Model Sugars (G+F) (cv)", color = "DOY") +
+  theme_minimal() +
+  geom_abline(intercept = 0, slope = 1) + 
+  annotate("text", 
+           x = min(somme_GF_df$somme_GF), 
+           y = max(somme_GF_df$pred), 
+           label = paste(
+             paste0("nb_comp = ", round(mod.bestpretr.noout[[i]][[3]][5], 0)),
+             paste0("R2_cv = ", round(mod.bestpretr.noout[[i]][[3]][7], 2)),
+             paste0("RMSE_cv = ", round(mod.bestpretr.noout[[i]][[3]][9], 2)),
+             paste0("pretr = ", mod.bestpretr.noout[[i]][[3]][2]),
+             paste0("nobs = ", mod.bestpretr.noout[[i]][[3]]$n), sep = "\n"), 
+           size = 5, hjust = 0, vjust = 1) +
+  theme(axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        legend.text = element_text(size = 14), 
+        legend.title = element_text(size = 16),
+        plot.title = element_text(size = 18))
+```
+
+```{r}
+# Plot 4: somme_GF (val)
+plot4 <- ggplot(data = datVal_sumGF[[mod.bestpretr.noout[["somme_GF"]][[2]]]], aes(x = somme_GF, y = pred)) +
+  geom_point(shape = 21, fill = "gray", size = 2) +
+  labs(x = "obs", y = "pred", title = paste(i, "(val)", sep = " ")) +
+  theme_minimal(base_size = 14) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", size = 1, color = "black") +
+  geom_abline(intercept = coef(valid.out_sumGF$modlin)[1], slope = coef(valid.out_sumGF$modlin)[2], linetype = "solid", size = 1, color = "black") +
+  annotate("text", 
+           x = min(datVal_sumGF[[mod.bestpretr.noout[["somme_GF"]][[2]]]]$somme_GF), 
+           y = max(datVal_sumGF[[mod.bestpretr.noout[["somme_GF"]][[2]]]]$pred), 
+           label = paste(
+             paste("R2_val =", round(valid.out_sumGF$output[2], 2)),
+             paste("RMSE_val =", round(valid.out_sumGF$output[3], 2)),
+             paste("nobs =", valid.out_sumGF$output[5]), sep = "\n"), 
+           size = 5, hjust = 0, vjust = 1) +
+  theme(axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        legend.text = element_text(size = 14), 
+        legend.title = element_text(size = 16),
+        plot.title = element_text(size = 18))
+```
+
+```{r fig.height=12, fig.width=12}
+# Panel plots
+grid.arrange(plot1, plot2, plot3, plot4, ncol = 2, nrow = 2)
+```
+
+# RatioGF_cal
+
+## 1. Collect glucose and fructose data obs
+
+```{r}
+gf <- c("glucose", "fructose")
+gf_list <- NULL
+
+#datCal prep
+datCal <- lapply(nirs.list.train, function(x) {
+  droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", gf, "NIRS")]))
+  })
+  
+#gf_list prep
+for (i in gf) {
+  gf_list[[i]] <- subset(datCal[[mod.bestpretr.noout[[i]][[2]]]], !echantillon %in%
+                                outliers.KS[[i]][[mod.bestpretr.noout[[i]][[2]]]])
+  gf_list[[i]]$DateDOY <- as.factor(gf_list[[i]]$DateDOY)
+}
+```
+
+## 2. ratio_cal_obs = G/F obs
+
+```{r}
+gf_list[["ratio_cal"]] <- NULL
+
+# Add obs sugars (G, F)
+gf_list[["ratio_cal"]] <- data.frame(gf_list[["glucose"]][, c("echantillon", 
+                                                              "DateDOY", 
+                                                              "cépage",
+                                                              "glucose",
+                                                              "fructose")])
+
+# Sum G + F obs
+gf_list[["ratio_cal"]]$ratio_cal_obs <- 
+  gf_list[["ratio_cal"]]$glucose / 
+  gf_list[["ratio_cal"]]$fructose
+```
+
+## 3. Drop outliers for glucose and fructose and keep the same samples
+
+```{r}
+# Drop outliers gf_list
+out <- unique(outliers.KS[["glucose"]][[mod.bestpretr.noout[["glucose"]][[2]]]], 
+              outliers.KS[["fructose"]][[mod.bestpretr.noout[["fructose"]][[2]]]])
+
+# Drop outliers pred
+glucose_pred <- as.data.frame(mod.bestpretr.noout[["glucose"]][[1]]$predicted)
+glucose_pred$echantillon <- gf_list[["glucose"]]$echantillon
+colnames(glucose_pred) <- c("glucose_pred", "echantillon")
+
+fructose_pred <- as.data.frame(mod.bestpretr.noout[["fructose"]][[1]]$predicted)
+fructose_pred$echantillon <- gf_list[["fructose"]]$echantillon
+colnames(fructose_pred) <- c("fructose_pred", "echantillon")
+
+# Keep common samples gf_list
+samp_ok <- glucose_pred$echantillon[which(glucose_pred$echantillon %in% fructose_pred$echantillon)]
+gf_list[["ratio_cal"]] <- subset(gf_list[["ratio_cal"]], echantillon %in% samp_ok)
+```
+
+## 4. ratio_cal_pred = G pred / G pred
+
+```{r include=FALSE}
+# Prep glucose and fructose pred
+glucose_pred <- subset(glucose_pred, echantillon %in% samp_ok)
+fructose_pred <- subset(fructose_pred, echantillon %in% samp_ok)
+
+gf_list[["ratio_cal"]]$ratio_cal_pred <- glucose_pred$glucose_pred / fructose_pred$fructose_pred
+```
+
+## 5. Validation set pred
+
+```{r}
+#datVal prep
+datVal <- lapply(nirs.list.valid.ok, function(x) {
+  droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", gf, "NIRS")]))
+})
+
+#Valid Glucose
+i=gf[1]
+##Ped
+datVal[[mod.bestpretr.noout[[i]][[2]]]]$pred <-
+  drop(predict(
+    mod.bestpretr.noout[[i]][[1]]$model,
+    ncomp = as.vector(mod.bestpretr.noout[[i]][[1]]$output[1]),
+    newdata = datVal[[mod.bestpretr.noout[[i]][[2]]]]$NIRS))
+
+#Valid Fructose
+j=gf[2]
+##Ped
+datVal[[mod.bestpretr.noout[[j]][[2]]]]$pred <-
+  drop(predict(
+    mod.bestpretr.noout[[j]][[1]]$model,
+    ncomp = as.vector(mod.bestpretr.noout[[j]][[1]]$output[1]),
+    newdata = datVal[[mod.bestpretr.noout[[j]][[2]]]]$NIRS))
+```
+
+```{r}
+##datVal ratio_cal
+datVal[["ratio_cal"]] <- datVal[["snv.cent"]][, c("echantillon", "DateDOY", "cépage", "glucose", "fructose", "NIRS")]
+
+datVal[["ratio_cal"]]$ratio_cal_obs <- 
+  datVal[["ratio_cal"]]$glucose / datVal[["ratio_cal"]]$fructose
+
+datVal[["ratio_cal"]]$ratio_cal_pred <- 
+  datVal[["snv"]]$pred / datVal[["snv.cent"]]$pred
+
+valid.out_ratio_cal <- stat_pred(dataSet = datVal[["ratio_cal"]], 
+                       obs = "ratio_cal_obs", 
+                       pred = "ratio_cal_pred")
+```
+
+## 6. Plots mod + val sugar-cal vs somme_GF
+
+### ratio_cal: 
+
+```{r}
+# Plot 1: ratio_cal (cv)
+plot1 <- ggplot(gf_list[["ratio_cal"]], aes(x = ratio_cal_obs, y = ratio_cal_pred)) +
+  geom_point(aes(color = as.factor(DateDOY)), size = 2) +
+  scale_color_viridis(discrete = T) +
+  labs(x = "observed", y = "predicted", title = "ratio_cal (cv)", color = "DOY") +
+  theme_minimal() +
+  geom_abline(intercept = 0, slope = 1) + 
+  annotate("text", 
+           x = min(gf_list[["ratio_cal"]]$ratio_cal_obs), 
+           y = max(gf_list[["ratio_cal"]]$ratio_cal_pred),
+           label = paste(paste("nobs =", nrow(gf_list[["ratio_cal"]])), sep = "\n"), 
+           size = 5, hjust = 0, vjust = 1) + 
+  theme(axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        legend.text = element_text(size = 14), 
+        legend.title = element_text(size = 16),
+        plot.title = element_text(size = 18))
+```
+
+```{r}
+# Plot 2: ratio_cal (val)
+plot2 <- ggplot(data = datVal[["ratio_cal"]], aes(x = ratio_cal_obs, y = ratio_cal_pred)) +
+  geom_point(shape = 21, fill = "gray", size = 2) +
+  labs(x = "obs", y = "pred", title = "ratio_cal (val)") +
+  theme_minimal() +
+  geom_abline(intercept = 0, 
+              slope = 1, 
+              linetype = "dashed", 
+              size = 1) +
+  geom_abline(intercept = coef(valid.out_ratio_cal$modlin)[1], 
+              slope = coef(valid.out_ratio_cal$modlin)[2], 
+              linetype = "solid", 
+              size = 1) +
+  annotate("text", 
+           x = min(datVal[["ratio_cal"]]$ratio_cal_obs), 
+           y = min(datVal[["ratio_cal"]]$ratio_cal_pred),
+           label = paste(
+             paste("R2_val =", round(valid.out_ratio_cal$output[2], 2)),
+             paste("RMSE_val =", round(valid.out_ratio_cal$output[3], 2)),
+             paste("nobs =", valid.out_ratio_cal$output[5]), sep = "\n"), 
+           size = 5, hjust = 0, vjust = 0) + 
+  theme(axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        legend.text = element_text(size = 14), 
+        legend.title = element_text(size = 16),
+        plot.title = element_text(size = 18))
+```
+
+### rapport_GF model:
+
+```{r}
+i = "rapport_GF"
+# Df prep
+## model
+datCal <- lapply(nirs.list.train, function(x){
+  droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", i, "NIRS")]))})
+
+datCal.noout <- subset(datCal[[mod.bestpretr.noout[[i]][[2]]]], 
+                       ! echantillon %in% 
+                         outliers.KS[[i]][[mod.bestpretr.noout[[i]][[2]]]])
+
+rapport_GF_df <- cbind(datCal.noout[, c("echantillon", "DateDOY", "cépage", "rapport_GF")],
+                     "pred" = as.vector(mod.bestpretr.noout[[i]][[1]]$predicted))
+```
+
+```{r}
+## valid
+datVal_rapGF <- lapply(nirs.list.valid.ok, function(x) {
+  droplevels(na.omit(x[, c("echantillon", "DateDOY", "cépage", i, "NIRS")]))
+})
+
+datVal_rapGF[[mod.bestpretr.noout[[i]][[2]]]]$pred <- drop(
+  predict(mod.bestpretr.noout[[i]][[1]]$model, 
+          ncomp = as.vector(mod.bestpretr.noout[[i]][[1]]$output[1]), 
+          newdata = datVal_rapGF[[mod.bestpretr.noout[[i]][[2]]]]$NIRS))
+
+valid.out_rapGF <- stat_pred(dataSet = datVal_rapGF[[mod.bestpretr.noout[[i]][[2]]]], obs = i, pred = "pred")
+```
+
+```{r}
+# Plot 3: rapport_GF (cv)
+plot3 <- ggplot(rapport_GF_df, aes(x = rapport_GF, y = pred)) +
+  geom_point(aes(color = as.factor(DateDOY)), size = 2) +
+  scale_color_viridis(discrete = T) +
+  labs(x = "observed", y = "predicted", title = "Model Glucose / Fructose ratio (G/F) (cv)", color = "DOY") +
+  theme_minimal() +
+  geom_abline(intercept = 0, slope = 1) + 
+  annotate("text", 
+           x = min(rapport_GF_df$rapport_GF), 
+           y = max(rapport_GF_df$pred), 
+           label = paste(
+             paste0("nb_comp = ", round(mod.bestpretr.noout[[i]][[3]][5], 0)),
+             paste0("R2_cv = ", round(mod.bestpretr.noout[[i]][[3]][7], 2)),
+             paste0("RMSE_cv = ", round(mod.bestpretr.noout[[i]][[3]][9], 2)),
+             paste0("pretr = ", mod.bestpretr.noout[[i]][[3]][2]),
+             paste0("nobs = ", mod.bestpretr.noout[[i]][[3]]$n), sep = "\n"), 
+           size = 5, hjust = 0, vjust = 1) +
+  theme(axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        legend.text = element_text(size = 14), 
+        legend.title = element_text(size = 16),
+        plot.title = element_text(size = 18))
+```
+
+```{r}
+# Plot 4: rapport_GF (val)
+plot4 <- ggplot(data = datVal_rapGF[[mod.bestpretr.noout[["rapport_GF"]][[2]]]], aes(x = rapport_GF, y = pred)) +
+  geom_point(shape = 21, fill = "gray", size = 2) +
+  labs(x = "obs", y = "pred", title = paste(i, "(val)", sep = " ")) +
+  theme_minimal(base_size = 14) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", size = 1, color = "black") +
+  geom_abline(intercept = coef(valid.out_rapGF$modlin)[1], slope = coef(valid.out_rapGF$modlin)[2], linetype = "solid", size = 1, color = "black") +
+  annotate("text", 
+           x = min(datVal_rapGF[[mod.bestpretr.noout[["rapport_GF"]][[2]]]]$rapport_GF), 
+           y = max(datVal_rapGF[[mod.bestpretr.noout[["rapport_GF"]][[2]]]]$pred), 
+           label = paste(
+             paste("R2_val =", round(valid.out_rapGF$output[2], 2)),
+             paste("RMSE_val =", round(valid.out_rapGF$output[3], 2)),
+             paste("nobs =", valid.out_rapGF$output[5]), sep = "\n"), 
+           size = 5, hjust = 0, vjust = 1) +
+  theme(axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        axis.text.x = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        legend.text = element_text(size = 14), 
+        legend.title = element_text(size = 16),
+        plot.title = element_text(size = 18))
+```
+
+```{r fig.height=12, fig.width=12}
+# Panel plots
+grid.arrange(plot1, plot2, plot3, plot4, ncol = 2, nrow = 2)
+```
+
+# Plot monitoring G+F and sugar_cal
+
+```{r fig.height=8,fig.width=6}
+for (i in genot) {
+  cep <- subset(pred.ok.noout, pred.ok.noout$geno == i)
+  b9dat <- names(which(table(cep$genoID) >= 9))
+  dat <- subset(cep, genoID %in% b9dat & doy != 200)
+  
+  # G+F HPLC
+  couleur <- viridis::viridis(n = length(b9dat))
+  
+  par(mar = c(2, 4.5, 4, 2.5), fig = c(0, 1, 0.45, 1))
+  
+  plot(somme_GF ~ doy, data = subset(dat, genoID == b9dat[1]),
+       pch = 19, col = couleur[1], axes = F,
+       cex = 2, ylim = c(0, 3000), xlab = "", ylab = "Sugars",
+       main = unique(dat$geno), cex.lab = 2, cex.main = 2.5)
+  axis(side = 2, cex.axis = 2, lwd = 2)
+  
+  for (j in 2:length(b9dat)) {
+    par(new = TRUE)
+    plot(somme_GF ~ doy, data = subset(dat, genoID == b9dat[j]),
+       pch = 19, col = couleur[j], axes = F,
+       cex = 2, ylim = c(0, 3000),
+       xaxt = "n", yaxt = "n", main = "", xlab = "", ylab = "")}
+  
+  # G+F pred
+  couleur <- viridis::cividis(n = length(b9dat))
+  
+  par(new = TRUE, fig = c(0, 1, 0, 0.45), mar = c(4.5, 4.5, 0, 2.5))
+  
+  plot(sum.Gpred.Fpred ~ doy, data = subset(dat, genoID == b9dat[1]),
+       pch = 19, col = couleur[1],  axes = F, ylab = "Sum G+F pred", xlab = "DOY",
+       cex = 2, ylim = c(0, 3000),
+       main = "", cex.lab = 2)
+  axis(side = 1, cex.axis = 2, lwd = 2)
+  axis(side = 2, cex.axis = 2, lwd = 2)
+  
+  for (j in 2:length(b9dat)) {
+    par(new = TRUE)
+    plot(sum.Gpred.Fpred ~ doy, data = subset(dat, genoID == b9dat[j]),
+       pch = 19, col = couleur[j], axes = F,
+       cex = 2, ylim = c(0, 3000),
+       xaxt = "n", yaxt = "n", main = "", xlab = "", ylab = "")}
+}
+```
+
+# Sugar_cal model
+
+## 9 dates
+
+```{r eval=TRUE, fig.height=8,fig.width=6}
+for (i in genot) {
+  cep <- subset(pred.ok.noout, pred.ok.noout$geno == i)
+  b9dat <- names(which(table(cep$genoID) >= 9))
+  dat <- subset(cep, genoID %in% b9dat & doy != 200)
+  
+  # GF
+  couleur <- viridis::cividis(n = length(b9dat))
+  
+  par(mar = c(2, 4.5, 4, 2.5), fig = c(0, 1, 0.45, 1))
+  
+  plot(sum.Gpred.Fpred ~ doy, data = subset(dat, genoID == b9dat[1]),
+       pch = 19, col = couleur[1], axes = F,
+       cex = 2, ylim = c(0, 3000), xlab = "", ylab = "Sugar_cal",
+       main = unique(dat$geno), cex.lab = 2, cex.main = 2.5)
+  axis(side = 2, cex.axis = 2, lwd = 2)
+  
+  for (j in 2:length(b9dat)) {
+    par(new = TRUE)
+    plot(sum.Gpred.Fpred ~ doy, data = subset(dat, genoID == b9dat[j]),
+       pch = 19, col = couleur[j], axes = F,
+       cex = 2, ylim = c(0, 3000),
+       xaxt = "n", yaxt = "n", main = "", xlab = "", ylab = "")}
+  
+  # malate
+  couleur <- magma(n = length(b9dat))
+  
+  par(new = TRUE, fig = c(0, 1, 0, 0.45), mar = c(4.5, 4.5, 0, 2.5))
+  
+  plot(malate ~ doy, data = subset(dat, genoID == b9dat[1]),
+       pch = 19, col = couleur[1],  axes = F, ylab = "Malic acid", xlab = "DOY",
+       cex = 2, ylim = c(0, 600),
+       main = "", cex.lab = 2)
+  axis(side = 1, cex.axis = 2, lwd = 2)
+  axis(side = 2, cex.axis = 2, lwd = 2)
+  
+  for (j in 2:length(b9dat)) {
+    par(new = TRUE)
+    plot(malate ~ doy, data = subset(dat, genoID == b9dat[j]),
+       pch = 19, col = couleur[j], axes = F,
+       cex = 2, ylim = c(0, 600),
+       xaxt = "n", yaxt = "n", main = "", xlab = "", ylab = "")}
+}
+```
+
+## 5 dates
+
+```{r eval=TRUE, fig.height=8,fig.width=6}
+for (i in genot) {
+  cep <- subset(pred.ok.noout, pred.ok.noout$geno == i)
+  b5dat <- names(which(table(cep$genoID) >= 5))
+  dat <- subset(cep, genoID %in% b5dat & doy != 200)
+  
+  # GF
+  couleur <- viridis::cividis(n = length(b5dat))
+  
+  par(mar = c(2, 4.5, 4, 2.5), fig = c(0, 1, 0.45, 1))
+  
+  plot(sum.Gpred.Fpred ~ doy, data = subset(dat, genoID == b5dat[1]),
+       pch = 19, col = couleur[1], axes = F,
+       cex = 2, ylim = c(0, 3000), xlab = "", ylab = "Sugar_cal",
+       main = unique(dat$geno), cex.lab = 2, cex.main = 2.5)
+  axis(side = 2, cex.axis = 2, lwd = 2)
+  
+  for (j in 2:length(b5dat)) {
+    par(new = TRUE)
+    plot(sum.Gpred.Fpred ~ doy, data = subset(dat, genoID == b5dat[j]),
+       pch = 19, col = couleur[j], axes = F,
+       cex = 2, ylim = c(0, 3000),
+       xaxt = "n", yaxt = "n", main = "", xlab = "", ylab = "")}
+  
+  # malate
+  couleur <- magma(n = length(b5dat))
+  
+  par(new = TRUE, fig = c(0, 1, 0, 0.45), mar = c(4.5, 4.5, 0, 2.5))
+  
+  plot(malate ~ doy, data = subset(dat, genoID == b5dat[1]),
+       pch = 19, col = couleur[1],  axes = F, ylab = "Malic acid", xlab = "DOY",
+       cex = 2, ylim = c(0, 600),
+       main = "", cex.lab = 2)
+  axis(side = 1, cex.axis = 2, lwd = 2)
+  axis(side = 2, cex.axis = 2, lwd = 2)
+  
+  for (j in 2:length(b5dat)) {
+    par(new = TRUE)
+    plot(malate ~ doy, data = subset(dat, genoID == b5dat[j]),
+       pch = 19, col = couleur[j], axes = F,
+       cex = 2, ylim = c(0, 600),
+       xaxt = "n", yaxt = "n", main = "", xlab = "", ylab = "")}
+}
+```
+
+```{r}
+rm(baies9dates, i, j, genot, couleur, cep, b9dat, b5dat, dat)
+```
+
+```{r eval=FALSE}
+save(mod_plsda, nirs.list.monitn pred.ok.noout, file = "Env_tmps_acc_sucres_baies.RData")
+```
+
