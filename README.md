@@ -39,7 +39,7 @@ These scripts were made in R Studio v 28.3.1 and running R v. 4.3.2 (R Core Team
 - `Estimation_sugar_acc_time_berries.Rmd`: This script use the PLSDA model and the sugar_cal data saved from `HPLC_traits_PLSDAmodel_and_predict_monit_berries.Rmd` to fit a sigmoid curve (logistic regression) on each monitored berry's kinetic. It generates `Data_for_calcul_time.csv`, `Data_for_calcul_time_rsquare_poly2.csv` and `coef_logi_rsq.csv`. It also fit a 2nd order polynomial, it was done to test another method than the sigmoid.
 
 ## `notebooks/`: Google Colab notebook used for the estimation of time differences (with Python)
-This notebook was made using Google Colab (Python v. 3.11)
+This notebook was made using Google Colab (Python v. 3.10.12)
 
 - `Timediff_9.ipynb`: This notebook generates the polynomial and the sigmoid fit plots for each berry and calculate the sugar accumulation time differences between each variety in 2022.
 
